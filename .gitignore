@@ -1,0 +1,9 @@
+# IDE
+.vscode/
+.omx/
+.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+

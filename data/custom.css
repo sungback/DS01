@@ -1,0 +1,15 @@
+.container { width:100% !important; }
+.CodeMirror {
+    font-family: D2Coding;
+    font-size: 22pt;
+    line-height: 140%;
+}
+div.output {
+    font-family: D2Coding;
+    font-size: 12pt;
+    padding-left: 5ex;
+}
+div.prompt {
+    padding-left: 0;
+    min-width: 2ex;
+}
