@@ -2,8 +2,11 @@
 
 ## 개발 환경 구성하기
 
-### miniconda 다운로드
+### miniconda 다운로드, 운영체제별 설치 파일 다운로드 후 Next, yes 클릭하여 설치 진행
 ==> https://repo.anaconda.com/miniconda/
+
+### miniconda 프롬프트 띄우기
+- 시작 > 모두 > Anaconda (miniconda3) > Anaconda Prompt
 
 ### conda update
 - conda update -n base -c defaults conda
@@ -19,7 +22,7 @@
 ### 라이브러리 설치
 - conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyter scikit-learn statsmodels openpyxl xlrd beautifulsoup4 lxml requests tqdm xgboost lightgbm optuna catboost
 
-### Visual Studio Code 다운로드 주소
+### Visual Studio Code 다운로드 주소, 운영체제별 설치 파일 다운로드 후 Next, yes 클릭하여 설치 진행
 - https://code.visualstudio.com/download
 
 ### 인공지능 제조 플랫폼 주소
