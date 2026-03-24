@@ -45,3 +45,57 @@
 
 ### streamlit 공부4 : 설명이 잘된 youtube 영상
 - https://www.youtube.com/watch?v=F8a-0JFHfOo
+
+### 데이터 사이트 주소들
+
+공공 데이터 포털
+==> https://www.data.go.kr/
+
+국가 통계 포털
+==> https://kosis.kr/index/index.do
+
+서울 열린 데이터 광장
+==> https://data.seoul.go.kr/
+
+AI hub
+==> https://aihub.or.kr/
+
+Google Dataset Search
+==> https://datasetsearch.research.google.com/
+
+한국은행 경제통계 시스템
+==> https://ecos.bok.or.kr
+
+UC Irvine Machine Learning Repository
+==> https://archive.ics.uci.edu/
+
+OpenML
+==> https://www.openml.org/
+
+EU Open Research Repository
+==> https://zenodo.org/
+
+huggingface datasets
+==> https://huggingface.co/datasets
+
+Registry of Open Data on AWS
+==> https://registry.opendata.aws/
+
+
+### kaggle 제조 데이터 추천
+
+Predictive Maintenance Dataset (AI4I 2020)
+==> https://www.kaggle.com/datasets/stephanmatzka/predictive-maintenance-dataset-ai4i-2020
+
+Predictive Maintenance for Industrial Machines
+==> https://www.kaggle.com/code/sayidmufaqih/predictive-maintenance-for-industrial-machines
+
+SECOM (Semiconductor Manufacturing) Dataset
+==> https://www.kaggle.com/datasets/paresh2047/uci-semcom
+
+Faulty Steel Plates
+https://www.kaggle.com/datasets/uciml/faulty-steel-plates
+
+Predicting Manufacturing Defects Dataset
+==> https://www.kaggle.com/datasets/rabieelkharoua/predicting-manufacturing-defects-dataset
+
