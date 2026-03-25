@@ -1,0 +1,2 @@
+﻿run_time,source_file,raw_file,clean_file,row_count,column_count,null_count_total,type_match_rate,failure_rate,status
+20260325_125907,data/ai4i2020.csv,output/raw/ai4i_raw_20260325_125907.csv,output/clean/ai4i_cleaned_20260325_125907.csv,10000,21,0,1.0,0.0339,SUCCESS

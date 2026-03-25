@@ -1,0 +1,4 @@
+﻿tool_wear_group,record_count,avg_tool_wear,avg_temp_diff,avg_power_proxy,failure_rate,avg_risk_score
+low,2396,24.482,10.004,59740.165,0.022,20.834
+mid,4566,100.634,10.008,60090.968,0.023,51.407
+high,3038,184.779,9.986,59960.063,0.061,86.928
