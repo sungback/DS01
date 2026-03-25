@@ -1,0 +1,3 @@
+﻿tool_wear_alert,count,avg_tool_wear,avg_temp_diff,avg_power_proxy,failure_rate
+0,9199,98.937,10.004,59984.45,0.023
+1,801,211.476,9.965,59768.433,0.154

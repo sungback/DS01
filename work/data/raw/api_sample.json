@@ -1,0 +1,17 @@
+[
+  {
+    "type": "L",
+    "recommended_temp_range": "295~305K",
+    "maintenance_priority": "low"
+  },
+  {
+    "type": "M",
+    "recommended_temp_range": "300~310K",
+    "maintenance_priority": "medium"
+  },
+  {
+    "type": "H",
+    "recommended_temp_range": "305~315K",
+    "maintenance_priority": "high"
+  }
+]

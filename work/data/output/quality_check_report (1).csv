@@ -1,0 +1,6 @@
+﻿check_item,check_result
+source_row_count,10000
+db_row_count,10000
+row_count_match,True
+duplicate_count,0
+total_null_count,2

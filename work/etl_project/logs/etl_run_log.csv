@@ -1,0 +1,2 @@
+﻿run_time,source_file,raw_file,staging_file,row_count,column_count,null_count_total,type_match_rate,failure_rate,quality_pass_count,quality_fail_count,status
+20260325_125947,data/ai4i2020.csv,etl_project/raw/ai4i_raw_20260325_125947.csv,etl_project/staging/ai4i_staging_20260325_125947.csv,10000,22,0,1.0,0.0339,6,0,SUCCESS

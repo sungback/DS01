@@ -1,0 +1,11 @@
+[START] 2026-03-25 13:00:07
+[READ] input_file=data/interim/ai4i_enriched.csv
+[READ] rows=10000, cols=26
+[DB] connected=data/output/manufacturing_pipeline.db
+[LOAD] table=manufacturing_data loaded
+[CHECK] row_count_match=True
+[QUALITY] duplicate_count=0
+[QUALITY] total_null_count=2
+[QUALITY] report_file=data/output/quality_check_report.csv
+[END] 2026-03-25 13:00:08
+[END] elapsed_seconds=0.14

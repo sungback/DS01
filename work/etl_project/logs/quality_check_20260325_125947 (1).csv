@@ -1,0 +1,7 @@
+﻿rule_name,description,value,passed
+row_count_gt_0,행 수가 0보다 커야 한다,10000,True
+null_count_total,전체 결측치 수 확인,0,True
+duplicated_udi_count,udi 중복이 없어야 한다,0,True
+valid_type_only,type은 L/M/H만 허용,0,True
+machine_failure_binary,machine_failure는 0/1만 허용,0,True
+tool_wear_non_negative,tool_wear_min은 음수가 아니어야 한다,0,True
