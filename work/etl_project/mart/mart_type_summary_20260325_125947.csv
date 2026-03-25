@@ -1,4 +1,0 @@
-﻿type,record_count,avg_air_temp,avg_process_temp,avg_rpm,avg_torque,avg_tool_wear,avg_temp_diff,avg_power_proxy,failure_rate,alert_rate
-H,1003,299.867,309.926,1538.148,39.838,107.42,10.059,59812.642,0.021,0.075
-L,6000,300.016,310.012,1539.469,39.997,108.379,9.996,59995.868,0.039,0.084
-M,2997,300.029,310.019,1537.599,40.017,107.272,9.99,59961.355,0.028,0.074
