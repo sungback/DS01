@@ -1,6 +1,0 @@
-﻿metric,value
-total_rows,10000
-failure_rate,0.0339
-tool_wear_alert_rate,0.0801
-quality_fail_count,0
-etl_status,SUCCESS
