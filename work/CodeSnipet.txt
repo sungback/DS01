@@ -1,0 +1,139 @@
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np # 수치계산용 라이브러리 가져오기
+import pandas as pd # 분석 라이브러리 가져오기
+import matplotlib.pyplot as plt # 기본 그래프 라이브러리 가져오기
+import seaborn as sns # 고급 그래프 라이브러리 가져오기
+
+
+# 한글깨짐 해결, 원인:디폴트 영문글꼴==>한글글꼴
+import matplotlib.pyplot as plt
+import platform
+if platform.system() == 'Windows': # W:대문자
+    plt.rcParams['font.family'] = 'Malgun Gothic' # M,G:대문자, 중간에 스페이스 한칸
+elif platform.system() == 'Darwin': # 맥OS, D:대문자
+    plt.rcParams['font.family'] = 'AppleGothic'
+else: # 리눅스
+    plt.rcParams['font.family'] = 'NanumGothic'
+# -(마이너스 기호) 깨짐 방지
+plt.rcParams['axes.unicode_minus'] = False
+
+
+# -------------------------------------
+# MarkDown 문서의 표를 왼쪽 정렬하는 코드
+# -------------------------------------
+
+%%html
+<style>
+table {float: left;}
+</style>
+
+
+df.columns = [
+    "udi", "product_id", "type",
+    "air_temp_k", "process_temp_k", "rot_speed_rpm",
+    "torque_nm", "tool_wear_min",
+    "machine_failure", "twf", "hdf", "pwf", "osf", "rnf"
+]
+
+print("정리된 컬럼명")
+print(df.columns.tolist())
+
+
+# 3. 기준정보 CSV 만들기
+equipment_master = pd.DataFrame({
+    "type": ["L", "M", "H"],
+    "type_desc": ["low grade", "medium grade", "high grade"],
+    "maintenance_cycle_days": [30, 20, 10],
+    "inspection_level": ["basic", "standard", "strict"]
+})
+
+equipment_file = raw_dir / "equipment_master.csv"
+equipment_master.to_csv(equipment_file, index=False, encoding="utf-8-sig")
+
+
+# 6. 여러 CSV 파일 만들기
+daily_dir = raw_dir / "daily_targets"
+daily_dir.mkdir(parents=True, exist_ok=True)
+
+pd.DataFrame({
+    "type": ["L", "M", "H"],
+    "shift": ["A", "A", "A"],
+    "daily_target": [120, 150, 180]
+}).to_csv(daily_dir / "target_a.csv", index=False, encoding="utf-8-sig")
+
+pd.DataFrame({
+    "type": ["L", "M", "H"],
+    "shift": ["B", "B", "B"],
+    "daily_target": [110, 145, 175]
+}).to_csv(daily_dir / "target_b.csv", index=False, encoding="utf-8-sig")
+
+pd.DataFrame({
+    "type": ["L", "M", "H"],
+    "shift": ["C", "C", "C"],
+    "daily_target": [100, 140, 170]
+}).to_csv(daily_dir / "target_c.csv", index=False, encoding="utf-8-sig")
+
+
+# 10. JSON 파일 만들기
+api_sample = [
+    {"type": "L", "recommended_temp_range": "295~305K", "maintenance_priority": "low"},
+    {"type": "M", "recommended_temp_range": "300~310K", "maintenance_priority": "medium"},
+    {"type": "H", "recommended_temp_range": "305~315K", "maintenance_priority": "high"}
+]
+
+json_file = raw_dir / "api_sample.json"
+
+with open(json_file, "w", encoding="utf-8") as f:
+    json.dump(api_sample, f, ensure_ascii=False, indent=2)
+
+
+
+# 13. 품질 점검 - 주요 수치형 범위
+range_check = pd.DataFrame({
+    "column_name": ["air_temp_k", "process_temp_k", "rot_speed_rpm", "torque_nm", "tool_wear_min"],
+    "min_value": [
+        df["air_temp_k"].min(),
+        df["process_temp_k"].min(),
+        df["rot_speed_rpm"].min(),
+        df["torque_nm"].min(),
+        df["tool_wear_min"].min()
+    ],
+    "max_value": [
+        df["air_temp_k"].max(),
+        df["process_temp_k"].max(),
+        df["rot_speed_rpm"].max(),
+        df["torque_nm"].max(),
+        df["tool_wear_min"].max()
+    ]
+})
+
+print("주요 수치형 컬럼 최소/최대값")
+display(range_check)
+
+
+# 14. 품질 점검 요약표 만들기
+quality_summary = pd.DataFrame({
+    "check_item": [
+        "source_row_count",
+        "db_row_count",
+        "row_count_match",
+        "duplicate_count",
+        "total_null_count"
+    ],
+    "check_result": [
+        df.shape[0],
+        db_row_count,
+        df.shape[0] == db_row_count,
+        duplicate_count,
+        int(df.isnull().sum().sum())
+    ]
+})
+
+print("품질 점검 요약")
+display(quality_summary)
+
+
+
