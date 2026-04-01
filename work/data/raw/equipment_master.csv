@@ -1,0 +1,4 @@
+﻿type,type_desc,maintenance_cycle_days,inspection_level
+L,low grade,30,basic
+M,medium grade,20,standard
+H,high grade,10,strict
