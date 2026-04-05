@@ -20,7 +20,7 @@
 - conda activate ds
 
 ### 라이브러리 설치
-- conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyter scikit-learn statsmodels openpyxl xlrd beautifulsoup4 lxml requests tqdm xgboost lightgbm optuna catboost
+- conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyter scikit-learn statsmodels openpyxl beautifulsoup4 lxml requests tqdm xgboost lightgbm optuna catboost
 
 ### Visual Studio Code 다운로드 주소, 운영체제별 설치 파일 다운로드 후 Next, yes 클릭하여 설치 진행
 - https://code.visualstudio.com/download
