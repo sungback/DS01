@@ -35,14 +35,26 @@ conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyte
 - **다운로드**: [VS Code 홈페이지](https://code.visualstudio.com/download)
 - 운영체제별 설치 파일을 다운로드한 후, **Next** 와 **Yes** 를 클릭하여 설치를 진행합니다.
 
+
+### 8. D2Coding 글꼴 설치
+
+1. 구글이나 네이버에서 **"D2Coding"**을 검색하거나, [D2Coding GitHub 레포지토리](https://github.com/naver/d2codingfont)에 접속합니다.
+2. `D2Coding-Ver1.3.2-20180524.zip` 파일을 클릭합니다.
+3. 측면의 **Download raw file** (아래 화살표 아이콘)을 클릭하여 다운로드합니다.
+4. 다운로드한 파일의 압축을 해제합니다.
+5. 파일 탐색기를 통해 `D2Coding-Ver1.3.2-20180524\D2CodingAll` 폴더로 이동합니다.
+6. `D2Coding-Ver1.3.2-20180524-all.ttc` 파일을 우클릭합니다.
+7. **추가 옵션 표시** > **모든 사용자용으로 설치**를 클릭하여 설치를 완료합니다.
+   - *Mac 사용자: 압축 해제 후 `D2Coding` 폴더 내의 `*.ttf` 파일들을 더블 클릭하여 서체를 설치합니다.*
+
 ---
 
 ## 🔗 유용한 사이트 링크
 
 ### 주요 플랫폼
-- **인공지능 제조 플랫폼 (KAMP)**: https://www.kamp-ai.kr/main
-- **Kaggle (캐글)**: https://www.kaggle.com/
-- **Streamlit**: https://streamlit.io/
+- [인공지능 제조 플랫폼 (KAMP)](https://www.kamp-ai.kr/main)
+- [Kaggle (캐글)](https://www.kaggle.com/)
+- [Streamlit](https://streamlit.io/)
 
 ### Streamlit 학습 자료
 - [wikidocs: 데이터 과학자의 쉬운 웹 제작 도구](https://wikidocs.net/226653)
