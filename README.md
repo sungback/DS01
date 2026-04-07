@@ -38,7 +38,7 @@ conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyte
 
 ### 8. D2Coding 글꼴 설치
 
-1. 구글이나 네이버에서 **"D2Coding"**을 검색하거나, [D2Coding GitHub 레포지토리](https://github.com/naver/d2codingfont)에 접속합니다.
+1. 구글이나 네이버에서 **D2Coding**을 검색하거나, [D2Coding GitHub 레포지토리](https://github.com/naver/d2codingfont)에 접속합니다.
 2. `D2Coding-Ver1.3.2-20180524.zip` 파일을 클릭합니다.
 3. 측면의 **Download raw file** (아래 화살표 아이콘)을 클릭하여 다운로드합니다.
 4. 다운로드한 파일의 압축을 해제합니다.
