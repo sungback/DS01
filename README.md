@@ -47,6 +47,24 @@ conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyte
 7. **추가 옵션 표시** > **모든 사용자용으로 설치**를 클릭하여 설치를 완료합니다.
    - *Mac 사용자: 압축 해제 후 `D2Coding` 폴더 내의 `*.ttf` 파일들을 더블 클릭하여 서체를 설치합니다.*
 
+### 9. Jupyter 설정하기 (글꼴 및 자동완성)
+
+#### 1. 코드 자동완성 설정
+- **Home** 탭 > **Settings** > **Settings Editor** 메뉴로 이동합니다.
+- 좌측 메뉴에서 **Code Completion**을 클릭합니다.
+- **Enable autocompletion** 항목을 체크(활성화)합니다.
+
+#### 2. Jupyter 노트북 설정
+- **Home** 탭 > **Settings** > **Settings Editor** 메뉴로 이동합니다.
+- 좌측 메뉴에서 **Notebook**을 클릭합니다.
+- 다음 항목들을 체크합니다:
+  - **Auto Closing Brackets** 체크
+  - **Code Folding** 체크
+- 화면을 아래로 스크롤하여 폰트 관련 설정을 다음과 같이 변경합니다:
+  - **Font Family**: `D2Coding`
+  - **Font Size**: `22`
+  - **Line Height**: `140`
+
 ---
 
 ## 🔗 유용한 사이트 링크
