@@ -47,7 +47,22 @@ conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyte
 7. **추가 옵션 표시** > **모든 사용자용으로 설치**를 클릭하여 설치를 완료합니다.
    - *Mac 사용자: 압축 해제 후 `D2Coding` 폴더 내의 `*.ttf` 파일들을 더블 클릭하여 서체를 설치합니다.*
 
-### 9. Jupyter 설정하기 (글꼴 및 자동완성)
+### 9. 윈도우 명령 프롬프트 기능 향상 (Clink 설치)
+
+명령 프롬프트(cmd)의 기능을 향상시켜 명령어 색상 강조 및 이전 명령어 불러오기 등의 편의 기능을 제공하는 Clink 설치 방법입니다.
+
+1. **Windows PowerShell 실행**
+   - 작업 표시줄의 돋보기(검색) 클릭 > `power` 검색 > **Windows PowerShell** 클릭
+2. **Clink 설치**
+   - PowerShell 창에 아래 명령어를 입력하여 설치를 완료합니다.
+     ```powershell
+     winget install clink
+     ```
+3. **명령 프롬프트(cmd) 확인**
+   - 작업 표시줄의 돋보기(검색) 클릭 > `cmd` 검색 > **명령 프롬프트** 클릭
+   - 명령어가 색깔별로 표시되며, 위쪽 화살표 키(`↑`)로 이전 명령어를 쉽게 불러올 수 있습니다.
+
+### 10. Jupyter 설정하기 (글꼴 및 자동완성)
 
 #### 1. 코드 자동완성 설정
 - **Home** 탭 > **Settings** > **Settings Editor** 메뉴로 이동합니다.
