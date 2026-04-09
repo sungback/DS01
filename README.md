@@ -122,7 +122,7 @@ conda install -c conda-forge numpy pandas scipy matplotlib seaborn plotly jupyte
 ## 🌐 Kaggle 번역 크롬 확장 프로그램 설치 및 사용법
 
 ### 1. 확장 프로그램 설치
-1. [DS01 GitHub 레포지토리](https://github.com/sungback/DS01)에서 `kaggle-notebook-translation-helper-main.zip` 파일을 다운로드합니다.
+1. [DS01 GitHub 레포지토리](https://github.com/sungback/DS01)의 etc 폴더에서 `kaggle-notebook-translation-helper-main.zip` 파일을 다운로드합니다.
 2. 다운로드한 파일의 압축을 편한 위치에 해제합니다. (예: `문서\kaggle-notebook-translation-helper-main`)
 3. 크롬 브라우저를 실행하고 다음 순서로 이동합니다:
    - 우측 상단의 세로로 된 `...` 클릭 > `확장 프로그램` > `확장 프로그램 관리`
