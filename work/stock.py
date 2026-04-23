@@ -10,33 +10,33 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # ==========================================
-# 1. SSL 보안 우회 패치 (사내 보안망 대응)
+# 1. SSL 보안 우회 패치
 # ==========================================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 original_request = requests.Session.request
 
 def patched_request(self, method, url, *args, **kwargs):
-    kwargs['verify'] = False  # 모든 요청에서 SSL 검증 해제
+    kwargs['verify'] = False
     return original_request(self, method, url, *args, **kwargs)
 
 requests.Session.request = patched_request
 
 # ==========================================
-# 2. 데이터 로직 (캐싱 적용)
+# 2. 데이터 로직
 # ==========================================
-@st.cache_data(ttl=3600)  # 1시간 동안 캐시 유지
+@st.cache_data(ttl=3600)
 def get_stock_data(ticker, start_date, end_date):
     try:
         df = fdr.DataReader(ticker, start_date, end_date)
         return df
     except Exception as e:
-        st.error(f"데이터를 불러오는 중 에러 발생: {e}")
         return None
 
 @st.cache_data
 def get_stock_list():
-    # 한국 거래소 종목 리스트 
-    return fdr.StockListing('KRX')
+    df = fdr.StockListing('KRX')
+    # 검색을 용이하게 하기 위해 "이름 (코드)" 포맷 리스트 생성
+    return (df['Name'] + " (" + df['Code'] + ")").tolist()
 
 # ==========================================
 # 3. Streamlit UI 구성
@@ -44,23 +44,30 @@ def get_stock_list():
 st.set_page_config(page_title="Stock Insights Dashboard", layout="wide")
 
 st.title("📈 주가 정보 분석 대시보드")
-st.markdown("사내 보안망에서도 `FinanceDataReader`를 통해 실시간 데이터를 수집합니다.")
 
 # 사이드바 설정
 st.sidebar.header("조회 설정")
-stock_list = get_stock_list()
+options = get_stock_list()
+
+# [수정 포인트] selectbox 설정
+# index=None을 설정하면 처음 시작 시 비어있으며, 
+# 텍스트 입력 시 검색 기능이 활성화되고 'x' 버튼으로 한 번에 지울 수 있습니다.
 target_stock = st.sidebar.selectbox(
     "종목 선택", 
-    stock_list['Name'] + " (" + stock_list['Code'] + ")"
+    options=options,
+    index=None,
+    placeholder="종목명 또는 코드를 입력하세요",
 )
-ticker_code = target_stock.split("(")[1].replace(")", "")
 
 # 날짜 선택
 default_start = datetime.now() - timedelta(days=365)
 start_date = st.sidebar.date_input("시작일", default_start)
 end_date = st.sidebar.date_input("종료일", datetime.now())
 
-if ticker_code:
+# 종목이 선택되었을 때만 실행
+if target_stock:
+    ticker_code = target_stock.split("(")[1].replace(")", "")
+    
     # 데이터 로드
     df = get_stock_data(ticker_code, start_date, end_date)
 
@@ -94,11 +101,11 @@ if ticker_code:
         with tab2:
             st.line_chart(df['Close'])
 
-        # 데이터 테이블
         with st.expander("Raw Data 보기"):
             st.dataframe(df.sort_index(ascending=False), use_container_width=True)
     else:
         st.warning("조회된 데이터가 없습니다. 종목 코드나 날짜를 확인해주세요.")
+else:
+    st.info("왼쪽 사이드바에서 종목을 선택해 주세요.")
 
-# 하단 푸터
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data by FinanceDataReader")
