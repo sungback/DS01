@@ -1,9 +1,8 @@
-# pip install streamlit finance-datareader plotly pandas
+# pip install streamlit
 # streamlit run lotto.py
 
 import streamlit as st
 import random
-from datetime import datetime
 
 st.title("로또 번호 생성기")
 st.markdown("### 합계가 170~210 사이인 것만 사용!")
