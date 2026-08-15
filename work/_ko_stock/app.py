@@ -39,7 +39,10 @@ st.title('📈 KOSPI 추세 투자 분석')
 # 2. 기본 설정
 # ============================================================
 
-CACHE = Path('stock_cache')
+# CACHE = Path('stock_cache') # StreamLit 배포시 에러 발생
+
+BASE_DIR = Path(__file__).resolve().parent
+CACHE = BASE_DIR / 'stock_cache'
 
 # 실제 매수 후 직접 기록
 BUY_PRICE = {
