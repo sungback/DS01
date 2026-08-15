@@ -41,31 +41,33 @@ TYPE_OPTIONS = ["전체"] + TYPE_ORDER
 
 system = platform.system()
 
-# Streamlit Cloud(Linux)에서 Nanum 폰트 등록
-if system == "Linux":
-    for font_file in fm.findSystemFonts(fontpaths=["/usr/share/fonts"]):
-        if "Nanum" in Path(font_file).name:
-            try:
-                fm.fontManager.addfont(font_file)
-            except Exception:
-                pass
-
-available_fonts = {f.name for f in fm.fontManager.ttflist}
-
 if system == "Windows":
     font = "Malgun Gothic"
+
 elif system == "Darwin":
     font = "AppleGothic"
-elif "NanumGothic" in available_fonts:
-    font = "NanumGothic"
-elif "NanumBarunGothic" in available_fonts:
-    font = "NanumBarunGothic"
+
 else:
-    font = "DejaVu Sans"
+    # Streamlit Cloud (Linux)
+    font_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+
+    if Path(font_path).exists():
+        fm.fontManager.addfont(font_path)
+        font = fm.FontProperties(fname=font_path).get_name()
+    else:
+        st.error("NanumGothic 폰트가 설치되지 않았습니다.")
+        font = "DejaVu Sans"
 
 plt.rcParams["font.family"] = font
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.titleweight"] = "normal"
+
+
+# ============================================================
+# 2. 한글 폰트
+# ============================================================
+
+
 
 
 # ============================================================
