@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+from matplotlib.lines import Line2D
 import mplfinance as mpf
 import streamlit as st
 
@@ -49,25 +50,21 @@ elif system == "Darwin":
 
 else:
     # Streamlit Cloud (Linux)
-    font_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
+    nanum_fonts = [
+        path for path in fm.findSystemFonts()
+        if "NanumGothic.ttf" in path
+    ]
 
-    if Path(font_path).exists():
-        fm.fontManager.addfont(font_path)
-        font = fm.FontProperties(fname=font_path).get_name()
+    if nanum_fonts:
+        fm.fontManager.addfont(nanum_fonts[0])
+        font = fm.FontProperties(fname=nanum_fonts[0]).get_name()
     else:
-        st.error("NanumGothic 폰트가 설치되지 않았습니다.")
+        st.warning("NanumGothic 폰트를 찾지 못했습니다.")
         font = "DejaVu Sans"
 
 plt.rcParams["font.family"] = font
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.titleweight"] = "normal"
-
-
-# ============================================================
-# 2. 한글 폰트
-# ============================================================
-
-
 
 
 # ============================================================
@@ -80,14 +77,7 @@ with st.sidebar:
     opt = st.selectbox("종목 유형", TYPE_OPTIONS)
     TOP_N = st.slider("전체 매수 후보 수", 5, 100, 20, 5)
     CHART_N = st.slider("매매계획 / 차트 종목 수", 1, 30, 10)
-
-    min_value_eok = st.number_input(
-        "최소 평균 거래대금(억원)",
-        min_value=1,
-        value=10,
-        step=1
-    )
-
+    min_value_eok = st.number_input("최소 평균 거래대금(억원)", min_value=1, value=10, step=1)
     stop_percent = st.slider("최대 손실률(%)", 1, 20, 8)
 
     MIN_VALUE = min_value_eok * 100_000_000
@@ -224,7 +214,6 @@ with st.spinner("KOSPI 종목 분석 중..."):
 
             # 투자 지표
             ret = close.pct_change()
-
             return20 = close.iloc[-1] / close.iloc[-21] - 1
             momentum = close.iloc[-22] / close.iloc[-126] - 1
             distance = close.iloc[-1] / ma20.iloc[-1] - 1
@@ -405,8 +394,6 @@ if selected.empty:
     st.info(f"{opt} 유형에 해당하는 종목이 없습니다.")
     st.stop()
 
-
-# 전체는 유형별로 묶어서 표시
 if opt == "전체":
     type_map = {name: i for i, name in enumerate(TYPE_ORDER)}
     selected["유형순서"] = selected["유형"].map(type_map)
@@ -429,7 +416,6 @@ st.dataframe(
 # 15. 매매계획 / 차트 대상
 # ============================================================
 
-# 특정 유형은 BuyScore TOP N
 if opt != "전체":
 
     chart_selected = (
@@ -439,13 +425,11 @@ if opt != "전체":
         .copy()
     )
 
-# 전체는 각 유형을 최소 1개씩 포함
 else:
 
     first_stocks = []
 
     for stock_type in TYPE_ORDER:
-
         temp = (
             selected[selected["유형"] == stock_type]
             .sort_values("BuyScore", ascending=False)
@@ -456,11 +440,8 @@ else:
             first_stocks.append(temp)
 
     first_stocks = pd.concat(first_stocks, ignore_index=True)
-
-    # 유형 수보다 CHART_N이 작으면 자동 증가
     target_count = max(CHART_N, len(first_stocks))
 
-    # 이미 선택된 대표 종목 제외
     remaining = (
         selected[~selected["Code"].isin(first_stocks["Code"])]
         .sort_values("BuyScore", ascending=False)
@@ -499,8 +480,6 @@ st.dataframe(
     width="stretch"
 )
 
-
-# 전체 선택 시 각 유형 포함 수
 if opt == "전체":
 
     included = (
@@ -519,7 +498,7 @@ if opt == "전체":
 # 17. 매수가 / 손절가 / 목표가
 # ============================================================
 
-# 입력한 매수가가 없으면 현재가 사용
+# 직접 입력한 매수가가 없으면 현재가 사용
 chart_selected["매수가"] = (
     chart_selected["Code"]
     .map(BUY_PRICE)
@@ -613,14 +592,23 @@ market_colors = mpf.make_marketcolors(
     inherit=True
 )
 
+# MA20=주황, MA60=초록, MA120=보라
 chart_style = mpf.make_mpf_style(
     base_mpf_style="yahoo",
     marketcolors=market_colors,
+    mavcolors=["orange", "green", "purple"],
     rc={
         "font.family": font,
         "figure.titleweight": "normal"
     }
 )
+
+# 이동평균선 범례
+ma_legend = [
+    Line2D([0], [0], color="orange", lw=2, label="MA20"),
+    Line2D([0], [0], color="green", lw=2, label="MA60"),
+    Line2D([0], [0], color="purple", lw=2, label="MA120")
+]
 
 
 # ============================================================
@@ -648,7 +636,6 @@ for _, row in chart_selected.iterrows():
             st.warning(f"{code} {name}: OHLC 데이터가 없습니다.")
             continue
 
-        # 숫자로 변환
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -669,7 +656,8 @@ for _, row in chart_selected.iterrows():
 
         title = f"{name} | {row['유형']} | 위험도 {row['위험도']}"
 
-        fig, _ = mpf.plot(
+        # 캔들 + 이동평균선
+        fig, axes = mpf.plot(
             df.tail(180),
             type="candle",
             mav=(20, 60, 120),
@@ -678,6 +666,13 @@ for _, row in chart_selected.iterrows():
             figsize=(13, 7),
             title=title,
             returnfig=True
+        )
+
+        # 가격 차트 왼쪽 위에 이동평균선 범례 표시
+        axes[0].legend(
+            handles=ma_legend,
+            loc="upper left",
+            frameon=True
         )
 
         st.pyplot(fig, width="stretch")
