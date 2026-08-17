@@ -68,7 +68,9 @@ st.markdown(
 # ==================================================
 
 # 주가 데이터 폴더
-DATA_FOLDER = Path("stock_data")
+# DATA_FOLDER = Path("stock_data") # <== 로컬에서는 OK(steamlit run app.py), app.py 배포시는 에러 발생.
+BASE_DIR = Path(__file__).resolve().parent
+DATA_FOLDER = BASE_DIR / "stock_data" # <== app.py 배포시 사용할 코드
 
 # 실제 매수가가 있으면 입력
 # 예: {"021240": 98200}
