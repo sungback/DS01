@@ -17,12 +17,13 @@ conda update -n base -c defaults conda
 ### 4. 기본 레포지토리 변경 (conda-forge)
 ```bash
 conda config --add channels conda-forge
+conda config --remove channels defaults
 conda config --set channel_priority strict
 ```
 
 ### 5. 가상환경 생성 및 활성화
 ```bash
-conda create -n ds python=3.11 -y
+conda create -n ds python=3.12 -y
 conda activate ds
 ```
 
