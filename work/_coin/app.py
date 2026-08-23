@@ -31,90 +31,15 @@ st.markdown("---")
 # 1. 한글 폰트 설정
 # =============================================
 def setup_korean_font():
-    """
-    운영체제에 맞는 한글 폰트를 설정한다.
+    fonts = {
+        "Windows": "Malgun Gothic",
+        "Darwin": "AppleGothic",
+        "Linux": "NanumGothic"
+    }
 
-    Windows:
-        Malgun Gothic
+    font_name = fonts.get(platform.system(), "NanumGothic")
 
-    macOS:
-        AppleGothic
-
-    Linux / Streamlit Cloud:
-        NanumGothic
-
-    Streamlit Cloud에서는 프로젝트 루트의
-    packages.txt에 fonts-nanum을 추가해야 한다.
-    """
-
-    system = platform.system()
-
-    # 현재 matplotlib에서 인식하고 있는 폰트 목록
-    available_fonts = {font.name for font in fm.fontManager.ttflist}
-
-    if system == "Windows":
-        candidates = ["Malgun Gothic", "NanumGothic"]
-
-    elif system == "Darwin":
-        candidates = ["AppleGothic", "NanumGothic"]
-
-    else:
-        # Streamlit Cloud / Linux
-        candidates = ["NanumGothic", "Nanum Gothic"]
-
-    # 실제 설치된 폰트 확인
-    font_name = None
-
-    for candidate in candidates:
-        if candidate in available_fonts:
-            font_name = candidate
-            break
-
-    # 찾지 못했을 경우
-    if font_name is None:
-        # Linux에서 Nanum 폰트 파일을 직접 다시 등록
-        if system == "Linux":
-            possible_font_dirs = [
-                "/usr/share/fonts",
-                "/usr/local/share/fonts",
-                os.path.expanduser("~/.fonts"),
-                os.path.expanduser("~/.local/share/fonts"),
-            ]
-
-            for font_dir in possible_font_dirs:
-                if not os.path.exists(font_dir):
-                    continue
-
-                for root, dirs, files in os.walk(font_dir):
-                    for file in files:
-                        if (
-                            file.lower().endswith((".ttf", ".otf"))
-                            and "nanum" in file.lower()
-                        ):
-                            try:
-                                font_path = os.path.join(root, file)
-
-                                fm.fontManager.addfont(font_path)
-
-                            except Exception:
-                                pass
-
-            # 폰트 목록 다시 확인
-            available_fonts = {font.name for font in fm.fontManager.ttflist}
-
-            for candidate in ["NanumGothic", "Nanum Gothic"]:
-                if candidate in available_fonts:
-                    font_name = candidate
-                    break
-
-    # 그래도 찾지 못하면 기본 폰트
-    if font_name is None:
-        font_name = "DejaVu Sans"
-
-    # matplotlib 전체 폰트 설정
     plt.rcParams["font.family"] = font_name
-
-    # 마이너스(-) 기호 깨짐 방지
     plt.rcParams["axes.unicode_minus"] = False
 
     return font_name
