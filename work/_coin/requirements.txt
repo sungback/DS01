@@ -1,0 +1,10 @@
+# Auto-generated requirements.txt
+
+streamlit==1.56.0
+pyupbit==0.2.33
+pandas==2.3.3
+numpy==2.2.6
+matplotlib==3.10.3
+mplfinance==0.12.10b0
+requests==2.32.3
+tqdm==4.67.1
