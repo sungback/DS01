@@ -37,15 +37,9 @@ def setup_korean_font():
         font_name = 'AppleGothic'
     else:  # Linux
         font_name = 'NanumGothic'
-    
-    # 폰트 존재 확인
-    available_fonts = [f.name for f in fm.fontManager.ttflist]
-    
-    if font_name in available_fonts:
-        plt.rc('font', family=font_name)
-    else:
-        plt.rc('font', family='sans-serif')
-    
+
+    plt.rc('font', family=font_name)
+
     plt.rcParams['axes.unicode_minus'] = False
 
 setup_korean_font()
