@@ -1,0 +1,1 @@
+{"version": 6, "market": "KRW-NCT", "candle_unit_minutes": 240, "saved_at": "2026-08-27T00:30:04", "records": [{"timestamp": "2026-08-26 21:00:00", "market": "KRW-NCT", "candle_date_time_utc": "2026-08-26T12:00:00", "open": 23.7, "high": 41.1, "low": 23.7, "close": 28.3, "trade_value": 111340134497.41743, "volume": 3330452341.940538, "unit": 240}]}
