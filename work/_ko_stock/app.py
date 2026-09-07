@@ -7,9 +7,11 @@ import logging
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 import platform
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 
+import FinanceDataReader as fdr
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -67,10 +69,18 @@ st.markdown(
 # 3. 기본 설정
 # ==================================================
 
-# 주가 데이터 폴더
-# DATA_FOLDER = Path("stock_data") # <== 로컬에서는 OK(steamlit run app.py), app.py 배포시는 에러 발생.
+# 최근 600일 데이터를 사용
+START = (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d")
+
+# app.py와 같은 위치의 stock_data 폴더를 사용
 BASE_DIR = Path(__file__).resolve().parent
-DATA_FOLDER = BASE_DIR / "stock_data" # <== app.py 배포시 사용할 코드
+DATA_FOLDER = BASE_DIR / "stock_data"
+
+# 폴더가 없으면 자동 생성
+DATA_FOLDER.mkdir(parents=True, exist_ok=True)
+
+# 파일 캐시 확인 주기: 1시간
+DATA_REFRESH_SECONDS = 60 * 60
 
 # 실제 매수가가 있으면 입력
 # 예: {"021240": 98200}
@@ -79,6 +89,9 @@ BUY_PRICE = {}
 # 직접 정한 손절가가 있으면 입력
 # 예: {"021240": 92100}
 BUY_STOP = {}
+
+# 데이터 파일 동시 갱신 충돌 방지
+DATA_LOCK = RLock()
 
 # matplotlib 동시 실행 충돌 방지
 PLOT_LOCK = RLock()
@@ -119,6 +132,14 @@ TOP_N = st.sidebar.slider("추천 종목 수", min_value=5, max_value=50, value=
 
 CHART_N = st.sidebar.slider("차트 개수", min_value=1, max_value=20, value=10)
 
+# 캔들 차트에 표시할 거래일 수
+CHART_DAYS = st.sidebar.selectbox(
+    "차트 기간",
+    [60, 120, 250],
+    index=0,
+    format_func=lambda x: f"{x}일",
+)
+
 min_value_uk = st.sidebar.number_input(
     "최소 평균 거래대금(억원)", min_value=1.0, max_value=1000.0, value=10.0, step=1.0
 )
@@ -131,10 +152,12 @@ stop_rate_pct = st.sidebar.slider("최대 손실률(%)", min_value=3, max_value=
 STOP_RATE = stop_rate_pct / 100
 
 
-# 분석 데이터를 새로 받은 경우 캐시 삭제
-if st.sidebar.button("분석 캐시 새로고침"):
+# 파일 캐시와 Streamlit 분석 캐시를 함께 새로고침
+if st.sidebar.button("주가/분석 데이터 새로고침"):
     st.cache_data.clear()
     st.rerun()
+
+st.sidebar.caption("주가 파일은 1시간마다 최신 여부를 자동 확인합니다.")
 
 
 # ==================================================
@@ -158,40 +181,270 @@ def show_card(column, title, value):
 
 
 # ==================================================
-# 7. 데이터 읽기 함수
+# 7. 주가 파일 캐시 준비
+# ==================================================
+
+
+@st.cache_data(ttl=DATA_REFRESH_SECONDS, show_spinner=False)
+def prepare_stock_data():
+    """
+    stock_data 폴더의 파일을 확인한다.
+
+    - KOSPI 종목 목록이 없으면 새로 저장
+    - KOSPI 지수와 개별 종목이 오래되었으면 부족한 날짜만 갱신
+    - 이미 최신이면 다운로드 생략
+    """
+
+    stats = {
+        "신규 다운로드": 0,
+        "기존 파일 갱신": 0,
+        "이미 최신": 0,
+        "새 데이터 없음": 0,
+        "오류": 0,
+    }
+
+    with DATA_LOCK:
+        # ----------------------------------------------
+        # ① KOSPI 종목 목록
+        # ----------------------------------------------
+        list_file = DATA_FOLDER / "KOSPI_list.csv"
+
+        try:
+            stocks = fdr.StockListing("KOSPI")
+
+        except Exception:
+            # 인터넷 오류 시 기존 목록 사용
+            if not list_file.exists():
+                raise RuntimeError(
+                    "KOSPI 종목 목록을 받지 못했고 저장된 KOSPI_list.csv도 없습니다."
+                )
+
+            stocks = pd.read_csv(list_file, dtype={"Code": str})
+
+        # 종목코드를 6자리 문자열로 통일
+        stocks["Code"] = (
+            stocks["Code"]
+            .astype(str)
+            .str.replace(".0", "", regex=False)
+            .str.zfill(6)
+        )
+
+        # 일반 종목만 사용
+        stocks = stocks[stocks["Code"].str.endswith("0")].copy()
+
+        # 다음 실행을 위해 저장
+        stocks.to_csv(list_file, index=False)
+
+        # ----------------------------------------------
+        # ② KOSPI 지수
+        # ----------------------------------------------
+        kospi_file = DATA_FOLDER / "KS11.csv"
+
+        if not kospi_file.exists():
+            kospi = fdr.DataReader("KS11", START)
+
+            if kospi.empty:
+                raise RuntimeError("KOSPI 데이터를 가져오지 못했습니다.")
+
+            kospi.index = pd.to_datetime(kospi.index)
+            kospi = kospi.sort_index()
+
+        else:
+            kospi = pd.read_csv(
+                kospi_file,
+                index_col="Date",
+                parse_dates=["Date"],
+            ).sort_index()
+
+            if kospi.empty:
+                kospi = fdr.DataReader("KS11", START)
+
+                if kospi.empty:
+                    raise RuntimeError("KOSPI 데이터를 가져오지 못했습니다.")
+
+                kospi.index = pd.to_datetime(kospi.index)
+                kospi = kospi.sort_index()
+
+            else:
+                try:
+                    # 마지막 날짜보다 5일 앞부터 다시 받는다.
+                    start = (
+                        kospi.index[-1] - pd.Timedelta(days=5)
+                    ).strftime("%Y-%m-%d")
+
+                    new = fdr.DataReader("KS11", start)
+
+                    if not new.empty:
+                        new.index = pd.to_datetime(new.index)
+                        new = new.sort_index()
+
+                        kospi = pd.concat([kospi, new])
+                        kospi = kospi[
+                            ~kospi.index.duplicated(keep="last")
+                        ].sort_index()
+
+                except Exception:
+                    # 갱신 실패 시 기존 KOSPI 파일을 계속 사용
+                    pass
+
+        # 최근 600일만 유지
+        cutoff = pd.Timestamp.today() - pd.Timedelta(days=600)
+        kospi = kospi[kospi.index >= cutoff]
+
+        if kospi.empty:
+            raise RuntimeError("KOSPI 데이터가 없습니다.")
+
+        kospi.to_csv(kospi_file, index_label="Date")
+
+        # 전체 시장의 최신 거래일
+        market_date = kospi.index[-1].date()
+
+        # ----------------------------------------------
+        # ③ 개별 종목 주가
+        # ----------------------------------------------
+        for _, stock in stocks.iterrows():
+            code = stock["Code"]
+            stock_file = DATA_FOLDER / f"{code}.csv"
+
+            try:
+                # 파일이 없으면 최근 600일 전체 다운로드
+                if not stock_file.exists():
+                    df = fdr.DataReader(code, START)
+
+                    if df.empty:
+                        stats["새 데이터 없음"] += 1
+                        continue
+
+                    df.index = pd.to_datetime(df.index)
+                    df = df.sort_index()
+                    df.to_csv(stock_file, index_label="Date")
+
+                    stats["신규 다운로드"] += 1
+                    continue
+
+                # 기존 파일 읽기
+                df = pd.read_csv(
+                    stock_file,
+                    index_col="Date",
+                    parse_dates=["Date"],
+                ).sort_index()
+
+                # 파일은 있지만 비어 있으면 다시 전체 다운로드
+                if df.empty:
+                    df = fdr.DataReader(code, START)
+
+                    if df.empty:
+                        stats["새 데이터 없음"] += 1
+                        continue
+
+                    df.index = pd.to_datetime(df.index)
+                    df = df.sort_index()
+                    df.to_csv(stock_file, index_label="Date")
+
+                    stats["신규 다운로드"] += 1
+                    continue
+
+                # 이미 최신 거래일까지 있으면 다운로드 생략
+                last_date = df.index[-1].date()
+
+                if last_date >= market_date:
+                    stats["이미 최신"] += 1
+                    continue
+
+                # 부족한 최근 날짜만 다운로드
+                start = (
+                    df.index[-1] - pd.Timedelta(days=5)
+                ).strftime("%Y-%m-%d")
+
+                new = fdr.DataReader(code, start)
+
+                if new.empty:
+                    stats["새 데이터 없음"] += 1
+                    continue
+
+                new.index = pd.to_datetime(new.index)
+                new = new.sort_index()
+
+                # 기존 데이터 + 새 데이터
+                df = pd.concat([df, new])
+                df = df[
+                    ~df.index.duplicated(keep="last")
+                ].sort_index()
+
+                # 최근 600일만 유지
+                df = df[df.index >= cutoff]
+
+                df.to_csv(stock_file, index_label="Date")
+                stats["기존 파일 갱신"] += 1
+
+            except Exception:
+                # 한 종목 오류가 전체 앱 실행을 막지 않도록 한다.
+                stats["오류"] += 1
+                continue
+
+    # 이 값이 바뀌면 아래 분석용 Streamlit 캐시도 새로 계산된다.
+    data_version = datetime.now().strftime("%Y%m%d%H%M%S")
+
+    return {
+        "market_date": str(market_date),
+        "stock_count": len(stocks),
+        "stats": stats,
+        "data_version": data_version,
+    }
+
+
+# ==================================================
+# 8. 데이터 읽기 함수
 # ==================================================
 
 
 @st.cache_data(show_spinner=False)
-def load_market():
+def load_market(data_version):
     """KOSPI 지수 읽기"""
 
-    df = pd.read_csv(DATA_FOLDER / "KS11.csv", index_col="Date", parse_dates=["Date"])
+    # data_version은 파일이 갱신되었을 때 캐시를 무효화하기 위한 값
+    _ = data_version
+
+    df = pd.read_csv(
+        DATA_FOLDER / "KS11.csv",
+        index_col="Date",
+        parse_dates=["Date"],
+    )
 
     return df.sort_index()
 
 
 @st.cache_data(show_spinner=False)
-def load_stocks():
+def load_stocks(data_version):
     """KOSPI 종목 목록 읽기"""
 
-    df = pd.read_csv(DATA_FOLDER / "KOSPI_list.csv", dtype={"Code": str})
+    _ = data_version
+
+    df = pd.read_csv(
+        DATA_FOLDER / "KOSPI_list.csv",
+        dtype={"Code": str},
+    )
 
     # 종목코드를 6자리 문자열로 변경
     # 예: 5930 → 005930
-    df["Code"] = df["Code"].astype(str).str.replace(".0", "", regex=False).str.zfill(6)
+    df["Code"] = (
+        df["Code"]
+        .astype(str)
+        .str.replace(".0", "", regex=False)
+        .str.zfill(6)
+    )
 
     return df
 
 
 # ==================================================
-# 8. 전체 종목 분석 함수
+# 9. 전체 종목 분석 함수
 # ==================================================
 
 
 @st.cache_data(show_spinner=False)
-def analyze_stocks(min_value):
-    stocks = load_stocks()
+def analyze_stocks(min_value, data_version):
+    stocks = load_stocks(data_version)
     rows = []
 
     for _, stock in stocks.iterrows():
@@ -321,28 +574,35 @@ def analyze_stocks(min_value):
 
 
 # ==================================================
-# 9. 데이터 파일 확인
-# ==================================================
-
-if not DATA_FOLDER.exists():
-    st.error("stock_data 폴더가 없습니다.")
-    st.stop()
-
-if not (DATA_FOLDER / "KS11.csv").exists():
-    st.error("stock_data/KS11.csv 파일이 없습니다.")
-    st.stop()
-
-if not (DATA_FOLDER / "KOSPI_list.csv").exists():
-    st.error("stock_data/KOSPI_list.csv 파일이 없습니다.")
-    st.stop()
-
-
-# ==================================================
-# 10. KOSPI 시장 상태
+# 10. 주가 데이터 자동 확인 / 갱신
 # ==================================================
 
 try:
-    kospi = load_market()
+    with st.spinner("주가 데이터 확인 중..."):
+        data_info = prepare_stock_data()
+
+except Exception as e:
+    st.error(f"주가 데이터를 준비하지 못했습니다: {e}")
+    st.stop()
+
+
+data_version = data_info["data_version"]
+
+# 캐시 처리 결과를 사이드바에 간단히 표시
+with st.sidebar.expander("주가 데이터 상태"):
+    st.write("기준일 :", data_info["market_date"])
+    st.write("분석 종목 :", data_info["stock_count"])
+
+    for label, value in data_info["stats"].items():
+        st.write(f"{label} : {value}")
+
+
+# ==================================================
+# 11. KOSPI 시장 상태
+# ==================================================
+
+try:
+    kospi = load_market(data_version)
 
 except Exception as e:
     st.error(f"KOSPI 데이터를 읽지 못했습니다: {e}")
@@ -383,11 +643,11 @@ col4.metric("시장 상태", "상승장" if market_up else "하락장")
 
 
 # ==================================================
-# 11. 전체 종목 분석
+# 12. 전체 종목 분석
 # ==================================================
 
 with st.spinner("KOSPI 종목 분석 중..."):
-    result = analyze_stocks(MIN_VALUE)
+    result = analyze_stocks(MIN_VALUE, data_version)
 
 
 if result.empty:
@@ -396,7 +656,7 @@ if result.empty:
 
 
 # ==================================================
-# 12. 매수 점수
+# 13. 매수 점수
 # ==================================================
 
 # 모멘텀 : 40점
@@ -426,7 +686,7 @@ result = result.sort_values("BuyScore", ascending=False).reset_index(drop=True)
 
 
 # ==================================================
-# 13. 종목 유형 분류
+# 14. 종목 유형 분류
 # ==================================================
 
 # % 단위로 변환
@@ -462,7 +722,7 @@ result["유형"] = np.select(conditions, types, default="일반")
 
 
 # ==================================================
-# 14. 위험도 / 해석
+# 15. 위험도 / 해석
 # ==================================================
 
 risk_map = {
@@ -490,7 +750,7 @@ result["해석"] = result["유형"].map(explain_map)
 
 
 # ==================================================
-# 15. 화면 표시용 단위
+# 16. 화면 표시용 단위
 # ==================================================
 
 result["20일(%)"] = result["Return20"] * 100
@@ -502,7 +762,7 @@ result["거래대금(억)"] = result["Value"] / 100_000_000
 
 
 # ==================================================
-# 16. 전체 추천 종목
+# 17. 전체 추천 종목
 # ==================================================
 
 st.divider()
@@ -536,7 +796,7 @@ st.dataframe(result[show_cols].head(TOP_N).round(2), width="stretch", hide_index
 
 
 # ==================================================
-# 17. 원하는 유형 선택
+# 18. 원하는 유형 선택
 # ==================================================
 
 if opt == "전체":
@@ -558,7 +818,7 @@ if selected.empty:
 
 
 # ==================================================
-# 18. 매수가
+# 19. 매수가
 # ==================================================
 
 # 실제 매수가가 있으면 실제 가격 사용
@@ -567,7 +827,7 @@ selected["매수가"] = selected["Code"].map(BUY_PRICE).fillna(selected["Close"]
 
 
 # ==================================================
-# 19. 손절가
+# 20. 손절가
 # ==================================================
 
 # MA60과 매수가 - 최대손실률 중
@@ -582,7 +842,7 @@ selected["손절가"] = selected["Code"].map(BUY_STOP).fillna(auto_stop)
 
 
 # ==================================================
-# 20. R / 분할 매도
+# 21. R / 분할 매도
 # ==================================================
 
 # R = 매수가 - 손절가
@@ -598,7 +858,7 @@ selected["2R(30%매도)"] = selected["매수가"] + selected["R"] * 2
 
 
 # ==================================================
-# 21. 현재 매도 단계
+# 22. 현재 매도 단계
 # ==================================================
 
 price = selected["Close"]
@@ -633,7 +893,7 @@ selected["매도신호"] = np.select(
 
 
 # ==================================================
-# 22. 매수 / 매도 계획 표
+# 23. 매수 / 매도 계획 표
 # ==================================================
 
 plan_cols = [
@@ -655,7 +915,7 @@ st.dataframe(selected[plan_cols].round(0), width="stretch", hide_index=True)
 
 
 # ==================================================
-# 23. 캔들 차트 스타일
+# 24. 캔들 차트 스타일
 # ==================================================
 
 st.divider()
@@ -665,7 +925,7 @@ st.subheader(f"{opt} 종목 차트")
 
 # 상승 = 빨강
 # 하락 = 파랑
-market_colors = mpf.make_marketcolors(up="red", down="blue", inherit=True)
+market_colors = mpf.make_marketcolors(up="red", down="#4A90E2", inherit=True)
 
 
 # 이동평균선 색상
@@ -692,7 +952,7 @@ ma_legend = [
 
 
 # ==================================================
-# 24. 선택된 모든 종목 차트
+# 25. 선택된 모든 종목 차트
 # ==================================================
 
 # CHART_N = 10이면 최대 10개의 차트 출력
@@ -721,13 +981,13 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
         st.warning(f"{name} : MA200을 표시하기에 데이터가 부족합니다.")
 
     # ==================================================
-    # 25. 종목 이름
+    # 26. 종목 이름
     # ==================================================
 
     st.markdown(f"### {i}. {name} ({code})")
 
     # ==================================================
-    # 26. 매매 정보 카드
+    # 27. 매매 정보 카드
     # ==================================================
 
     # --------------------------------------------------
@@ -761,24 +1021,42 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
     show_card(c8, "매도 신호", row["매도신호"])
 
     # ==================================================
-    # 27. 차트 제목
+    # 28. 차트 제목
     # ==================================================
 
     title = f"{name} | {row['유형']} | 위험도 {row['위험도']}\n{row['해석']}"
 
     # ==================================================
-    # 28. 캔들 차트
+    # 29. 캔들 차트
     # ==================================================
+
+    # 이동평균선은 전체 데이터로 먼저 계산한 뒤
+    # 사용자가 선택한 기간만 화면에 표시한다.
+    # 이렇게 해야 60일 차트에서도 MA120 / MA200을 표시할 수 있다.
+    plot_df = chart_df.copy()
+    for period in (20, 60, 120, 200):
+        plot_df[f"MA{period}"] = plot_df["Close"].rolling(period).mean()
+
+    plot_df = plot_df.tail(CHART_DAYS)
+
+    ma_colors = {20: "orange", 60: "green", 120: "purple", 200: "black"}
+    ma_addplots = [
+        mpf.make_addplot(plot_df[f"MA{period}"], color=ma_colors[period], width=1.2)
+        for period in (20, 60, 120, 200)
+        if plot_df[f"MA{period}"].notna().any()
+    ]
 
     with PLOT_LOCK:
         fig, axes = mpf.plot(
-            # 최근 250거래일
-            chart_df.tail(250),
+            # 사이드바에서 선택한 최근 거래일
+            plot_df,
             type="candle",
             # 이동평균선
-            mav=(20, 60, 120, 200),
+            addplot=ma_addplots,
             # 거래량
             volume=True,
+            # 가격 영역을 조금 더 넓게, 거래량 영역은 조금 낮게 표시
+            panel_ratios=(4, 1),
             style=style,
             figsize=(13, 7),
             returnfig=True,
@@ -799,8 +1077,18 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
 
         fig.subplots_adjust(right=0.78)
 
+        # 가격 차트와 거래량 차트 사이의 기본 간격은 그대로 유지한다.
+        # 대신 거래량 막대 폭만 아주 조금 줄여 좌우에 여유를 준다.
+        if len(axes) >= 3:
+            volume_ax = axes[2]
+            for bar in volume_ax.patches:
+                old_width = bar.get_width()
+                new_width = old_width * 0.88
+                bar.set_x(bar.get_x() + (old_width - new_width) / 2)
+                bar.set_width(new_width)
+
         # ==================================================
-        # 29. 매수가 / 손절가 / 1R / 2R 선
+        # 30. 매수가 / 손절가 / 1R / 2R 선
         # ==================================================
 
         price_lines = [
@@ -865,7 +1153,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
             )
 
         # ==================================================
-        # 30. 전체 범례
+        # 31. 전체 범례
         # ==================================================
 
         ax.legend(
@@ -876,7 +1164,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
         )
 
         # ==================================================
-        # 31. Streamlit에 차트 표시
+        # 32. Streamlit에 차트 표시
         # ==================================================
 
         st.pyplot(fig, width="stretch")
@@ -889,7 +1177,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
 
 
 # ==================================================
-# 32. 안내
+# 33. 안내
 # ==================================================
 
 st.caption(
