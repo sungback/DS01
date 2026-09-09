@@ -1966,7 +1966,7 @@ def plot_candidate(candidate: Candidate) -> Optional[plt.Figure]:
     데이터가 부족하면 None을 반환한다(호출부에서 조용히 건너뛴다).
     """
     plan = candidate.plan
-    if candidate.df_240m is None or not plan.available:
+    if candidate.df_240m is None:
         return None
 
     completed = ensure_indicators(
@@ -2081,24 +2081,46 @@ def _pick_axes(axes) -> tuple:
 
 def _draw_price_legend(ax, candidate: Candidate) -> None:
     plan = candidate.plan
-    entries = [
-        (BUY_COLORS[0], f"매수구간 하단: {format_price(plan.buy_zone_low)}원", 1.0),
-        (BUY_COLORS[1], f"매수구간 상단: {format_price(plan.buy_zone_high)}원", 1.0),
-        (STOP_COLOR, f"손절: {format_price(plan.stop_price)}원", 1.0),
-        (SELL_COLORS[0], f"1차 익절 30%: {format_price(plan.take_profit_1)}원", 1.0),
-        (SELL_COLORS[1], f"2차 익절 30%: {format_price(plan.take_profit_2)}원", 1.0),
-        (
-            SELL_COLORS[2],
-            f"Runner 강화(4R): {format_price(plan.runner_trigger_4r)}원",
-            1.0,
-        ),
-        (
-            TRAIL_COLOR,
-            f"Runner Trail: {format_price(plan.trailing_stop_current)}원",
-            1.0,
-        ),
-        (PRICE_COLOR, f"현재가: {format_price(candidate.price)}원", 1.5),
-    ]
+    entries = []
+
+    if plan.available:
+        entries.extend(
+            [
+                (
+                    BUY_COLORS[0],
+                    f"매수구간 하단: {format_price(plan.buy_zone_low)}원",
+                    1.0,
+                ),
+                (
+                    BUY_COLORS[1],
+                    f"매수구간 상단: {format_price(plan.buy_zone_high)}원",
+                    1.0,
+                ),
+                (STOP_COLOR, f"손절: {format_price(plan.stop_price)}원", 1.0),
+                (
+                    SELL_COLORS[0],
+                    f"1차 익절 30%: {format_price(plan.take_profit_1)}원",
+                    1.0,
+                ),
+                (
+                    SELL_COLORS[1],
+                    f"2차 익절 30%: {format_price(plan.take_profit_2)}원",
+                    1.0,
+                ),
+                (
+                    SELL_COLORS[2],
+                    f"Runner 강화(4R): {format_price(plan.runner_trigger_4r)}원",
+                    1.0,
+                ),
+                (
+                    TRAIL_COLOR,
+                    f"Runner Trail: {format_price(plan.trailing_stop_current)}원",
+                    1.0,
+                ),
+            ]
+        )
+
+    entries.append((PRICE_COLOR, f"현재가: {format_price(candidate.price)}원", 1.5))
     handles = [
         _line(color, label, style="--", width=width) for color, label, width in entries
     ]
@@ -2328,11 +2350,9 @@ def run_analysis(
     order = {symbol: rank for rank, symbol in enumerate(table["symbol"])}
     candidates.sort(key=lambda c: order.get(c.symbol, len(order)))
 
-    # 차트는 상위 종목만 그리므로 나머지 원본 캔들은 버려 메모리를 아낀다.
-    keep = max(settings.chart_n, settings.strategy_n)
-    for candidate in candidates[keep:]:
-        candidate.df_240m = None
-        candidate.swing_points = None
+    # 최종 판단 필터에서 어떤 후보를 선택하더라도 차트를 그릴 수 있도록
+    # 모든 후보의 4시간봉 원본과 Swing 데이터를 유지한다.
+    # 각 후보는 최대 CANDLE_COUNT(200)개 수준이라 필터 기능의 편의성을 우선한다.
 
     result.candidates = candidates
     result.result_table = table
@@ -2395,34 +2415,183 @@ PRICE_COLUMNS = [
 
 CSS = """
 <style>
-header[data-testid="stHeader"], div[data-testid="stToolbar"] { display: none !important; }
-.block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; max-width: 1500px; }
-section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {
-    width: 295px !important; min-width: 295px !important; background: #f3f5f9 !important;
+/* ---------------------------------------------------------
+   기본 화면
+--------------------------------------------------------- */
+header[data-testid="stHeader"],
+div[data-testid="stToolbar"] {
+    display: none !important;
 }
-section[data-testid="stSidebar"] { border-right: 1px solid #e5e7eb; }
-section[data-testid="stSidebar"] .block-container { padding: 0.45rem 0.9rem 0.55rem 0.9rem !important; }
-section[data-testid="stSidebar"] label { font-size: 0.82rem !important; }
-section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] { gap: 0.10rem !important; }
-section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] { gap: 0.45rem !important; }
-section[data-testid="stSidebar"] div[data-testid="stTextInput"] { margin: 0 !important; padding: 0 !important; }
+
+.block-container {
+    padding-top: 1.2rem !important;
+    padding-bottom: 1.2rem !important;
+    max-width: 1500px;
+}
+
+/* ---------------------------------------------------------
+   사이드바 전체
+--------------------------------------------------------- */
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"] > div {
+    width: 340px !important;
+    min-width: 340px !important;
+    background: #f6f7fb !important;
+}
+
+section[data-testid="stSidebar"] {
+    border-right: 1px solid #e2e5ec;
+}
+
+section[data-testid="stSidebar"] .block-container {
+    padding: 1.0rem 1.15rem 1.2rem 1.15rem !important;
+}
+
+/* 위젯 사이 간격: 기존 0.10rem은 너무 촘촘했음 */
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+    gap: 0.42rem !important;
+}
+
+section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+    gap: 0.55rem !important;
+}
+
+/* ---------------------------------------------------------
+   섹션 제목
+--------------------------------------------------------- */
+.sidebar-section-title {
+    font-size: 1.02rem;
+    font-weight: 800;
+    line-height: 1.3;
+    color: #262b38;
+
+    background: #e9edf5;
+    border-left: 4px solid #ff4b4b;
+    border-radius: 7px;
+
+    padding: 0.48rem 0.65rem;
+    margin: 0.85rem 0 0.45rem 0;
+}
+
+/* 사이드바 첫 제목은 위 여백을 작게 */
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"]
+> div:first-child .sidebar-section-title {
+    margin-top: 0.15rem;
+}
+
+/* ---------------------------------------------------------
+   라벨
+--------------------------------------------------------- */
+section[data-testid="stSidebar"] label {
+    font-size: 0.88rem !important;
+    font-weight: 550 !important;
+    color: #343946 !important;
+    line-height: 1.25 !important;
+}
+
+/* ---------------------------------------------------------
+   텍스트 입력
+--------------------------------------------------------- */
+section[data-testid="stSidebar"] div[data-testid="stTextInput"] {
+    margin: 0 0 0.22rem 0 !important;
+    padding: 0 !important;
+}
+
 section[data-testid="stSidebar"] div[data-testid="stTextInput"] input,
 section[data-testid="stSidebar"] div[data-testid="stTextInput"] div[data-baseweb="input"] {
-    min-height: 2.05rem !important; height: 2.05rem !important; font-size: 0.93rem !important;
+    min-height: 2.35rem !important;
+    height: 2.35rem !important;
+    font-size: 0.92rem !important;
+    border-radius: 9px !important;
 }
-section[data-testid="stSidebar"] div[data-testid="stSlider"] { margin: 0 0 0.08rem 0 !important; padding: 0 !important; }
+
+/* ---------------------------------------------------------
+   슬라이더
+   값 표시가 다음 제목과 겹치지 않도록 아래 여백 확보
+--------------------------------------------------------- */
+section[data-testid="stSidebar"] div[data-testid="stSlider"] {
+    margin: 0.05rem 0 0.75rem 0 !important;
+    padding: 0 !important;
+}
+
+/* slider 숫자 표시 */
+section[data-testid="stSidebar"] div[data-testid="stSlider"] [data-testid="stThumbValue"] {
+    font-size: 0.80rem !important;
+    font-weight: 650 !important;
+}
+
+/* ---------------------------------------------------------
+   버튼
+--------------------------------------------------------- */
+section[data-testid="stSidebar"] div[data-testid="stButton"] {
+    margin-top: 0.35rem !important;
+}
+
 section[data-testid="stSidebar"] div[data-testid="stButton"] button {
-    min-height: 2.35rem !important; font-size: 0.95rem !important; font-weight: 700 !important;
-    border-radius: 10px !important; margin-top: 0.45rem !important;
+    min-height: 2.65rem !important;
+    font-size: 0.98rem !important;
+    font-weight: 750 !important;
+    border-radius: 10px !important;
 }
-.main-app-title { font-size: 2.55rem; font-weight: 800; line-height: 1.24; letter-spacing: -0.03em; color: #2b2d3a; margin: 0.25rem 0 0.7rem 0; }
-.main-app-subtitle { font-size: 0.97rem; color: #7b8190; margin: 0 0 1rem 0; }
-.main-top-divider { border: 0; height: 1px; background: #e5e7eb; margin: 0.8rem 0 1.4rem 0; }
-.info-banner { background: #eef2ff; border-radius: 10px; padding: 0.95rem 1rem; color: #1d4ed8; margin-bottom: 1.2rem; }
-.sidebar-section-title { font-size: 1.05rem; font-weight: 800; color: #2f3342; margin: 0.5rem 0 0.3rem 0; }
-.chart-title { text-align: center; font-size: 1.55rem; font-weight: 700; margin: 0.25rem 0 0.15rem 0; line-height: 1.35; }
-.chart-meta { text-align: center; color: #7a7f8c; font-size: 0.9rem; margin: 0 0 0.45rem 0; line-height: 1.4; }
-.chart-verdict { text-align: center; background: #f8f9fb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.55rem 0.8rem; margin: 0 0 0.55rem 0; font-size: 0.88rem; }
+
+/* ---------------------------------------------------------
+   메인 화면
+--------------------------------------------------------- */
+.main-app-title {
+    font-size: 2.55rem;
+    font-weight: 800;
+    line-height: 1.24;
+    letter-spacing: -0.03em;
+    color: #2b2d3a;
+    margin: 0.25rem 0 0.7rem 0;
+}
+
+.main-app-subtitle {
+    font-size: 0.97rem;
+    color: #7b8190;
+    margin: 0 0 1rem 0;
+}
+
+.main-top-divider {
+    border: 0;
+    height: 1px;
+    background: #e5e7eb;
+    margin: 0.8rem 0 1.4rem 0;
+}
+
+.info-banner {
+    background: #eef2ff;
+    border-radius: 10px;
+    padding: 0.95rem 1rem;
+    color: #1d4ed8;
+    margin-bottom: 1.2rem;
+}
+
+.chart-title {
+    text-align: center;
+    font-size: 1.55rem;
+    font-weight: 700;
+    margin: 0.25rem 0 0.15rem 0;
+    line-height: 1.35;
+}
+
+.chart-meta {
+    text-align: center;
+    color: #7a7f8c;
+    font-size: 0.9rem;
+    margin: 0 0 0.45rem 0;
+    line-height: 1.4;
+}
+
+.chart-verdict {
+    text-align: center;
+    background: #f8f9fb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0.55rem 0.8rem;
+    margin: 0 0 0.55rem 0;
+    font-size: 0.88rem;
+}
 </style>
 """
 
@@ -2434,7 +2603,7 @@ def read_settings() -> tuple[Settings, bool]:
     """사이드바 입력을 Settings로 변환한다. 반환: (settings, 실행 클릭 여부)"""
     with st.sidebar:
         st.markdown(
-            '<div class="sidebar-section-title">⚙ 분석 설정 · v17</div>',
+            '<div class="sidebar-section-title">⚙️&nbsp;&nbsp;분석 설정 · v17</div>',
             unsafe_allow_html=True,
         )
         cache_minutes = st.slider(
@@ -2442,7 +2611,7 @@ def read_settings() -> tuple[Settings, bool]:
         )
 
         st.markdown(
-            '<div class="sidebar-section-title">💰 포지션 리스크</div>',
+            '<div class="sidebar-section-title">💰&nbsp;&nbsp;포지션 리스크</div>',
             unsafe_allow_html=True,
         )
         capital = _number_input("계좌 자금(원)", f"{DEFAULTS.account_capital:,.0f}")
@@ -2453,7 +2622,7 @@ def read_settings() -> tuple[Settings, bool]:
             weight = _number_input("비중(%)", f"{DEFAULTS.max_position_pct:.2f}")
 
         st.markdown(
-            '<div class="sidebar-section-title">🔍 필터링 조건</div>',
+            '<div class="sidebar-section-title">🔍&nbsp;&nbsp;필터링 조건</div>',
             unsafe_allow_html=True,
         )
         min_change = st.slider(
@@ -2467,7 +2636,8 @@ def read_settings() -> tuple[Settings, bool]:
         )
 
         st.markdown(
-            '<div class="sidebar-section-title">📋 출력</div>', unsafe_allow_html=True
+            '<div class="sidebar-section-title">📋&nbsp;&nbsp;출력 설정</div>',
+            unsafe_allow_html=True,
         )
         col3, col4, col5 = st.columns(3)
         with col3:
@@ -2477,7 +2647,7 @@ def read_settings() -> tuple[Settings, bool]:
         with col5:
             chart_n = _number_input("차트", str(DEFAULTS.chart_n))
 
-        run_clicked = st.button("🚀 분석 실행", type="primary", width="stretch")
+        run_clicked = st.button("🔄 다시 분석", type="primary", width="stretch")
 
     settings = Settings(
         min_change_24h=min_change,
@@ -2530,8 +2700,8 @@ def render_header(settings: Settings) -> None:
 
 def render_intro() -> None:
     st.markdown(
-        '<div class="info-banner">👉 좌측 사이드바에서 설정을 조정하고 '
-        "분석 실행 버튼을 클릭하세요.</div>",
+        '<div class="info-banner">앱을 열면 자동으로 분석합니다. '
+        "설정을 변경한 뒤에는 사이드바의 다시 분석 버튼을 누르세요.</div>",
         unsafe_allow_html=True,
     )
     st.subheader("기본 선별 구조")
@@ -2633,20 +2803,111 @@ def render_strategy_cards(candidates: list[Candidate], count: int) -> None:
             )
 
 
-def render_charts(candidates: list[Candidate], default_count: int) -> None:
-    available = [c for c in candidates if c.df_240m is not None and c.plan.available]
+def ensure_chart_data(candidate: Candidate, settings: Settings) -> bool:
+    """차트용 4시간봉 데이터를 필요할 때 복구한다.
+
+    분석 객체에 df_240m이 남아 있으면 그대로 사용하고,
+    없으면 디스크 OHLCV 캐시에서 다시 읽는다.
+    캐시에도 없을 때만 Upbit API를 호출한다.
+
+    따라서 이전 버전에서 메모리 절약을 위해 df_240m=None으로
+    지운 session_state 결과도 필터 선택 시 다시 차트를 그릴 수 있다.
+    """
+    df = candidate.df_240m
+
+    # 1) 현재 분석 객체에 데이터가 있으면 그대로 사용
+    if df is not None and not df.empty:
+        if candidate.swing_points is None:
+            completed = keep_completed_candles(df, SCREEN_UNIT)
+            candidate.swing_points = detect_swing_points(completed)
+        return True
+
+    # 2) 디스크 캐시에서 복구 (TTL과 무관하게 차트 표시용으로 사용)
+    try:
+        cached = load_ohlcv(candidate.symbol, SCREEN_UNIT)
+    except Exception as exc:
+        log.warning("%s 차트 캐시 복구 실패: %s", candidate.symbol, exc)
+        cached = None
+
+    if cached is not None and not cached.empty:
+        candidate.df_240m = cached
+        completed = keep_completed_candles(cached, SCREEN_UNIT)
+        candidate.swing_points = detect_swing_points(completed)
+        return True
+
+    # 3) 캐시도 없으면 해당 종목만 API에서 보충
+    try:
+        client = UpbitClient()
+        candles = fetch_ohlcv(
+            client,
+            candidate.symbol,
+            SCREEN_UNIT,
+            settings,
+            offline=False,
+        )
+        if candles.ok:
+            candidate.df_240m = candles.df
+            completed = keep_completed_candles(candles.df, SCREEN_UNIT)
+            candidate.swing_points = detect_swing_points(completed)
+            return True
+    except Exception as exc:
+        log.warning("%s 차트용 4시간봉 재조회 실패: %s", candidate.symbol, exc)
+
+    return False
+
+
+def render_charts(
+    candidates: list[Candidate],
+    default_count: int,
+    settings: Settings,
+    key_suffix: str = "all",
+) -> None:
+    # 차트 데이터는 분석 객체에 남아 있는지 여부에 의존하지 않는다.
+    # 필요하면 캐시/API에서 종목별로 다시 복구한다.
+    available: list[Candidate] = []
+    missing: list[str] = []
+
+    for candidate in candidates:
+        if ensure_chart_data(candidate, settings):
+            available.append(candidate)
+        else:
+            missing.append(candidate.symbol)
+
     if not available:
-        st.info("표시할 4시간봉 차트 데이터가 없습니다.")
+        st.warning(
+            "선택한 종목의 4시간봉 데이터를 복구하지 못했습니다. "
+            "사이드바의 '다시 분석'을 눌러 데이터를 갱신해 주세요."
+        )
+        if missing:
+            st.caption("차트 데이터 없음: " + ", ".join(missing))
         return
+
+    if missing:
+        st.caption(
+            f"차트 데이터 복구 실패 {len(missing)}개: " + ", ".join(missing[:10])
+        )
 
     labels = {
         f"{c.symbol} · {c.korean_name} · {c.score.total:.1f}": c for c in available
     }
+
+    # 필터별/분석별로 별도 key를 사용해 예전 Streamlit widget 상태가
+    # 빈 선택으로 남아 차트가 사라지는 문제를 방지한다.
+    analysis_key = str(st.session_state.get("analysis_time", "current"))
+    widget_key = f"chart_selector_v3_{key_suffix}_{analysis_key}"
+
+    default_labels = list(labels)[: min(default_count, len(labels))]
     selected = st.multiselect(
         "차트로 볼 종목",
         options=list(labels),
-        default=list(labels)[:default_count],
+        default=default_labels,
+        key=widget_key,
     )
+
+    # 이전/비정상 widget 상태로 선택값이 비어 있더라도
+    # 필터 직후에는 최소한 기본 차트를 보여준다.
+    if not selected and default_labels:
+        selected = default_labels
 
     for index, label in enumerate(selected):
         candidate = labels[label]
@@ -2697,6 +2958,157 @@ def _chart_meta_html(candidate: Candidate) -> str:
     )
 
 
+ACTION_FILTER_COLORS = {
+    "전체": ("#2563EB", "#EFF6FF"),
+    "분할매수 관심": ("#15803D", "#F0FDF4"),
+    "매수 관심": ("#16A34A", "#F0FDF4"),
+    "눌림 후 분할매수 관심": ("#059669", "#ECFDF5"),
+    "눌림 대기": ("#CA8A04", "#FEFCE8"),
+    "반등 확인 후 접근": ("#D97706", "#FFF7ED"),
+    "추격매수 자제": ("#EA580C", "#FFF7ED"),
+    "관망": ("#64748B", "#F8FAFC"),
+    "관망 / 반등 확인": ("#475569", "#F8FAFC"),
+    "신규매수 보류": ("#DC2626", "#FEF2F2"),
+}
+
+
+def render_action_filter_buttons(
+    action_options: list[str],
+    action_counts: dict[str, int],
+    total_count: int,
+) -> str:
+    """최종 판단을 한 줄 색상 버튼으로 선택한다.
+
+    CSS는 Markdown으로 렌더링하지 않고 st.html()로 직접 삽입한다.
+    따라서 <style> 코드가 화면에 문자로 노출되지 않는다.
+    """
+    state_key = "final_action_filter_button"
+
+    if (
+        state_key not in st.session_state
+        or st.session_state[state_key] not in action_options
+    ):
+        st.session_state[state_key] = "전체"
+
+    selected = st.session_state[state_key]
+
+    # --------------------------------------------------------
+    # CSS를 단 하나의 <style> 블록으로 생성한다.
+    # st.markdown()이 아니라 st.html()을 사용해 Markdown 코드블록
+    # 오인 문제를 원천적으로 피한다.
+    # --------------------------------------------------------
+    css = [
+        "<style>",
+        'div[class*="st-key-final_action_btn_"] button {',
+        "min-height:2.45rem !important;",
+        "padding:0.34rem 0.40rem !important;",
+        "border-radius:9px !important;",
+        "font-size:0.76rem !important;",
+        "font-weight:750 !important;",
+        "line-height:1.10 !important;",
+        "white-space:nowrap !important;",
+        "box-shadow:none !important;",
+        "}",
+        'div[class*="st-key-final_action_btn_"] button p {',
+        "font-size:inherit !important;",
+        "font-weight:inherit !important;",
+        "white-space:nowrap !important;",
+        "margin:0 !important;",
+        "}",
+        'div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-final_action_btn_"]) {',
+        "flex-wrap:nowrap !important;",
+        "gap:0.30rem !important;",
+        "margin-bottom:0.32rem !important;",
+        "}",
+    ]
+
+    for idx, action in enumerate(action_options):
+        strong, pale = ACTION_FILTER_COLORS.get(action, ("#475569", "#F8FAFC"))
+
+        if action == selected:
+            background = strong
+            text_color = "#FFFFFF"
+            shadow = f"0 0 0 2px {pale},0 2px 5px rgba(0,0,0,0.12)"
+        else:
+            background = pale
+            text_color = strong
+            shadow = "none"
+
+        selector = f"div.st-key-final_action_btn_{idx} button"
+        p_selector = f"div.st-key-final_action_btn_{idx} button p"
+
+        css.extend(
+            [
+                f"{selector} {{",
+                f"background:{background} !important;",
+                f"color:{text_color} !important;",
+                f"border:1.5px solid {strong} !important;",
+                f"box-shadow:{shadow} !important;",
+                "}",
+                f"{p_selector} {{color:{text_color} !important;}}",
+                f"{selector}:hover {{",
+                f"background:{strong} !important;",
+                "color:#FFFFFF !important;",
+                f"border-color:{strong} !important;",
+                "}",
+                f"{p_selector}:hover {{color:#FFFFFF !important;}}",
+            ]
+        )
+
+    css.append("</style>")
+    css_html = "".join(css)
+
+    # Streamlit 1.56에서는 st.html 사용 가능.
+    # 구버전에서도 동작하도록 fallback을 둔다.
+    if hasattr(st, "html"):
+        st.html(css_html)
+    else:
+        st.markdown(css_html, unsafe_allow_html=True)
+
+    st.markdown(
+        '<div style="font-size:0.92rem;font-weight:750;'
+        'margin:0.35rem 0 0.45rem 0;">최종 판단 필터</div>',
+        unsafe_allow_html=True,
+    )
+
+    labels = []
+    for action in action_options:
+        count = total_count if action == "전체" else action_counts.get(action, 0)
+        labels.append(f"{action} ({count}개)")
+
+    # 버튼이 많아지면 자동으로 여러 줄로 나눈다.
+    # 한 줄 최대 6개: 예) 11개 버튼 -> 6개 + 5개
+    max_per_row = 6
+    clicked_action = None
+
+    for row_start in range(0, len(action_options), max_per_row):
+        row_actions = action_options[row_start : row_start + max_per_row]
+        row_labels = labels[row_start : row_start + max_per_row]
+
+        # 긴 판단명은 조금 더 넓게 배정한다.
+        row_widths = [max(1.0, min(2.6, len(label) / 7.0)) for label in row_labels]
+        columns = st.columns(row_widths, gap="small")
+
+        for offset, (column, action, label) in enumerate(
+            zip(columns, row_actions, row_labels)
+        ):
+            idx = row_start + offset
+
+            with column:
+                if st.button(
+                    label,
+                    key=f"final_action_btn_{idx}",
+                    use_container_width=True,
+                ):
+                    clicked_action = action
+
+    if clicked_action is not None and clicked_action != selected:
+        st.session_state[state_key] = clicked_action
+        st.rerun()
+
+    return st.session_state[state_key]
+
+
 def render_results(result: AnalysisResult) -> None:
     settings = result.settings
     table = result.result_table
@@ -2708,13 +3120,87 @@ def render_results(result: AnalysisResult) -> None:
     render_metrics(result)
     st.caption(f"분석 시각: {st.session_state.get('analysis_time', '-')}")
 
-    st.subheader(f"상위 {min(settings.top_n, len(table))}개 후보")
+    # --------------------------------------------------------
+    # 최종 판단 필터
+    # 분석은 다시 실행하지 않고 현재 결과만 즉시 필터링한다.
+    # --------------------------------------------------------
+    action_order = [
+        "분할매수 관심",
+        "매수 관심",
+        "눌림 후 분할매수 관심",
+        "눌림 대기",
+        "반등 확인 후 접근",
+        "추격매수 자제",
+        "관망",
+        "관망 / 반등 확인",
+        "신규매수 보류",
+    ]
+
+    action_counts = (
+        table["final_action"].fillna("확인 필요").astype(str).value_counts().to_dict()
+    )
+
+    available_actions = [a for a in action_order if a in action_counts]
+    available_actions += sorted(a for a in action_counts if a not in available_actions)
+
+    action_options = ["전체"] + available_actions
+
+    selected_action = render_action_filter_buttons(
+        action_options,
+        action_counts,
+        len(table),
+    )
+
+    if selected_action == "전체":
+        filtered_table = table.copy()
+    else:
+        filtered_table = table.loc[table["final_action"] == selected_action].copy()
+
+    # Candidate 객체는 action 문자열을 다시 비교하지 않고
+    # 결과표의 symbol을 기준으로 연결한다.
+    # 이렇게 하면 표의 필터 결과와 차트 대상이 항상 동일해진다.
+    candidate_map = {c.symbol: c for c in result.candidates}
+    filtered_candidates = [
+        candidate_map[symbol]
+        for symbol in filtered_table["symbol"].tolist()
+        if symbol in candidate_map
+    ]
+
+    missing_candidate_symbols = [
+        symbol
+        for symbol in filtered_table["symbol"].tolist()
+        if symbol not in candidate_map
+    ]
+    if missing_candidate_symbols:
+        st.warning(
+            "일부 결과의 분석 객체를 찾지 못했습니다: "
+            + ", ".join(missing_candidate_symbols[:10])
+        )
+
+    if selected_action != "전체":
+        strong, pale = ACTION_FILTER_COLORS.get(selected_action, ("#475569", "#F8FAFC"))
+        st.markdown(
+            f'<div style="display:inline-block;'
+            f"background:{pale};color:{strong};"
+            f"border:1px solid {strong};border-radius:8px;"
+            f"padding:0.28rem 0.55rem;margin:0.25rem 0 0.45rem 0;"
+            f'font-size:0.84rem;font-weight:700;">'
+            f"{selected_action} · {len(filtered_table)}개 / 전체 {len(table)}개"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    if filtered_table.empty:
+        st.info(f"'{selected_action}'에 해당하는 종목이 없습니다.")
+        return
+
+    st.subheader(f"상위 {min(settings.top_n, len(filtered_table))}개 후보")
     st.caption(
         "Swing: HH=이전보다 높은 고점 · HL=이전보다 높은 저점 · "
         "LH=이전보다 낮은 고점 · LL=이전보다 낮은 저점 "
         "(HH/HL은 상승 구조, LH/LL은 하락 구조)"
     )
-    render_main_table(table, settings.top_n)
+    render_main_table(filtered_table, settings.top_n)
     st.caption(
         "※ '최종 판단/투자 조언'은 현재 데이터에 따른 규칙 기반 참고 신호이며, "
         "확정적인 수익을 의미하지 않습니다."
@@ -2722,7 +3208,7 @@ def render_results(result: AnalysisResult) -> None:
 
     st.markdown("---")
     st.subheader("핵심 해석")
-    lines = make_summary_lines(result.candidates, settings.top_n)
+    lines = make_summary_lines(filtered_candidates, settings.top_n)
     if lines:
         for line in lines:
             st.markdown(f"- {line}")
@@ -2732,9 +3218,9 @@ def render_results(result: AnalysisResult) -> None:
     st.markdown("---")
     st.subheader("MA / ATR 기반 매수·손절·익절 + Runner")
     st.caption("1차 30% +1.5R, 2차 30% +2.5R, 마지막 40% Runner")
-    render_strategy_cards(result.candidates, settings.strategy_n)
+    render_strategy_cards(filtered_candidates, settings.strategy_n)
 
-    strategy_table = make_strategy_table(result.candidates, settings.strategy_n)
+    strategy_table = make_strategy_table(filtered_candidates, settings.strategy_n)
     if not strategy_table.empty:
         with st.expander("전략 표로 보기", expanded=False):
             st.dataframe(
@@ -2750,15 +3236,30 @@ def render_results(result: AnalysisResult) -> None:
 
     st.markdown("---")
     st.subheader("캔들 차트")
-    render_charts(result.candidates, settings.chart_n)
+    chart_default_count = (
+        settings.chart_n
+        if selected_action == "전체"
+        else min(len(filtered_candidates), 10)
+    )
+
+    render_charts(
+        filtered_candidates,
+        chart_default_count,
+        settings,
+        key_suffix=selected_action.replace(" / ", "_").replace(" ", "_"),
+    )
 
     st.markdown("---")
     st.subheader("전체 분석 데이터")
-    st.dataframe(table, width="stretch", hide_index=True)
+    st.dataframe(filtered_table, width="stretch", hide_index=True)
     st.download_button(
         "CSV 다운로드",
-        data=table.to_csv(index=False).encode("utf-8-sig"),
-        file_name="upbit_coin_analyzer_results.csv",
+        data=filtered_table.to_csv(index=False).encode("utf-8-sig"),
+        file_name=(
+            "upbit_coin_analyzer_results.csv"
+            if selected_action == "전체"
+            else f"upbit_coin_{selected_action.replace(' / ', '_').replace(' ', '_')}.csv"
+        ),
         mime="text/csv",
     )
 
@@ -2790,7 +3291,13 @@ def main() -> None:
 
     render_header(settings)
 
-    if run_clicked:
+    # 분석 결과가 없으면 앱 로딩 즉시 자동 분석한다.
+    # 키 존재 여부가 아니라 실제 결과(None 여부)를 확인해야
+    # Streamlit rerun/session_state 상황에서도 자동 실행이 빠지지 않는다.
+    existing_result: AnalysisResult | None = st.session_state.get("analysis")
+    should_run = run_clicked or existing_result is None
+
+    if should_run:
         progress = st.progress(0.0)
         status = st.empty()
 
@@ -2804,14 +3311,17 @@ def main() -> None:
                 "%Y-%m-%d %H:%M:%S"
             )
         except Exception as exc:
-            progress.empty()
-            status.empty()
             st.error(f"분석에 실패했습니다: {exc}")
             return
+        finally:
+            progress.empty()
+            status.empty()
 
     result: AnalysisResult | None = st.session_state.get("analysis")
     if result is None:
-        render_intro()
+        st.warning(
+            "자동 분석 결과가 없습니다. 잠시 후 다시 실행하거나 '다시 분석'을 눌러주세요."
+        )
         return
 
     # 저장된 결과는 실행 당시 설정을 그대로 쓰되, 출력 개수만 현재 값을 반영한다.
