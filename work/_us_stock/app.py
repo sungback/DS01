@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, distribution
@@ -109,6 +110,54 @@ MARKET_TICKERS = ["SPY", "QQQ"]
 VALID_TYPES = ["균형형", "강한추세", "저과열", "일반", "급등주의", "과열주의"]
 TYPE_OPTIONS = ["전체", *VALID_TYPES]
 
+# 자동 갱신은 마지막 저장일에서 이만큼 겹쳐 다시 받는다.
+# 주말/휴장 및 수정 데이터를 안전하게 포함하면서 과도한 재다운로드를 막는다.
+REFRESH_OVERLAP_DAYS = 3
+
+# BuyScore(100점) 가중치
+SCORE_WEIGHT_MOMENTUM = 45
+SCORE_WEIGHT_DISTANCE = 30
+SCORE_WEIGHT_STABILITY = 20
+SCORE_WEIGHT_LIQUIDITY = 5
+# 거리 점수는 MA20 이격이 이 값에 가까울수록 만점, 허용 오차를 벗어나면 0점
+IDEAL_MA20_DIST = 0.05
+MA20_DIST_TOLERANCE = 0.07
+
+# 유형 분류 임계값
+SURGE_DAY_GAIN5 = 0.10
+SURGE_RETURN20 = 0.20
+OVERHEAT_MA20_DIST = 0.09
+STRONG_MOMENTUM_PCT = 0.85
+STRONG_MAX_MA20_DIST = 0.10
+LOW_HEAT_MA20_DIST = 0.03
+LOW_HEAT_RETURN20 = 0.08
+
+TYPE_RISK = {
+    "강한추세": "높음",
+    "급등주의": "높음",
+    "과열주의": "높음",
+    "균형형": "낮음",
+    "저과열": "낮음",
+    "일반": "보통",
+}
+TYPE_EXPLAIN = {
+    "강한추세": "추세는 매우 강하지만 이미 많이 오른 종목",
+    "급등주의": "최근 급등하여 추격매수에 주의할 종목",
+    "과열주의": "상승추세지만 MA20에서 다소 멀어진 종목",
+    "균형형": "추세·모멘텀·과열도의 균형이 좋은 종목",
+    "저과열": "과열은 적지만 추가 상승 힘을 확인할 종목",
+    "일반": "무난한 상승추세 종목",
+}
+
+# 실제 보유 종목의 매수가/직접 손절가가 있다면 여기에 입력
+# 예: BUY_PRICE = {"AAPL": 220.0}
+# 예: BUY_STOP = {"AAPL": 205.0}
+BUY_PRICE: dict[str, float] = {}
+BUY_STOP: dict[str, float] = {}
+
+# matplotlib 동시 실행 충돌 방지
+PLOT_LOCK = RLock()
+
 
 def keep_selectbox_options_at_top() -> None:
     """Streamlit 1.56 selectbox의 잘못된 초기 가상 스크롤을 보정한다."""
@@ -150,15 +199,6 @@ def keep_selectbox_options_at_top() -> None:
 
 
 keep_selectbox_options_at_top()
-
-# 실제 보유 종목의 매수가/직접 손절가가 있다면 여기에 입력
-# 예: BUY_PRICE = {"AAPL": 220.0}
-# 예: BUY_STOP = {"AAPL": 205.0}
-BUY_PRICE: dict[str, float] = {}
-BUY_STOP: dict[str, float] = {}
-
-# matplotlib 동시 실행 충돌 방지
-PLOT_LOCK = RLock()
 
 
 # ============================================================
@@ -208,6 +248,9 @@ plt.rcParams["font.weight"] = "normal"
 plt.rcParams["axes.titleweight"] = "normal"
 
 
+# ============================================================
+# 화면 표시 헬퍼
+# ============================================================
 def show_card(column, title: str, value: str) -> None:
     """종목별 매매 정보를 작은 카드로 표시한다."""
     with column:
@@ -222,8 +265,53 @@ def show_card(column, title: str, value: str) -> None:
         )
 
 
+def display_dataframe(df: pd.DataFrame, *, height: int | None = None) -> None:
+    """DataFrame을 컨테이너 너비에 맞춰 표시한다."""
+    kwargs = {
+        "width": "stretch",
+        "hide_index": True,
+    }
+    if height is not None:
+        kwargs["height"] = height
+    st.dataframe(df, **kwargs)
+
+
 # ============================================================
-# 유틸리티
+# 설정값 컨테이너
+# ============================================================
+@dataclass(frozen=True)
+class ScreenParams:
+    """스크리닝/점수/분류에 쓰이는 비율 단위 파라미터."""
+
+    min_dollar_volume: float
+    max_ret20: float
+    max_ma20_dist: float
+    max_day_gain5: float
+    bal_mom_pct: float
+    bal_ret20_max: float
+    bal_ma20_min: float
+    bal_ma20_max: float
+    bal_day_gain5: float
+    bal_vol_pct: float
+    max_stop_loss: float
+
+
+@dataclass(frozen=True)
+class SidebarConfig:
+    """사이드바에서 입력받은 모든 설정."""
+
+    start_date: str
+    batch_size: int
+    chart_type: str
+    min_rows: int
+    top_n: int
+    chart_n: int
+    chart_days: int
+    screen: ScreenParams
+
+
+# ============================================================
+# 데이터 수집 / 검증
 # ============================================================
 def read_sp500_universe() -> pd.DataFrame:
     """최신 S&P 500 구성 종목을 가져오고 로컬 파일에 저장한다."""
@@ -331,7 +419,6 @@ def find_pending_targets(
     targets: list[dict],
     latest_market_date: pd.Timestamp,
     start_date: str,
-    refresh_days: int,
 ) -> tuple[list[dict], int]:
     pending: list[dict] = []
     latest_count = 0
@@ -358,9 +445,9 @@ def find_pending_targets(
         if last_date is None:
             item_start = start_date
         else:
-            # 자동 갱신은 마지막 저장일에서 3일만 겹쳐 다시 받는다.
-            # 주말/휴장 및 수정 데이터를 안전하게 포함하면서 과도한 재다운로드를 막는다.
-            item_start_ts = pd.Timestamp(last_date) - pd.Timedelta(days=3)
+            item_start_ts = pd.Timestamp(last_date) - pd.Timedelta(
+                days=REFRESH_OVERLAP_DAYS
+            )
             item_start_ts = max(item_start_ts, pd.Timestamp(start_date))
             item_start = item_start_ts.date().isoformat()
 
@@ -562,6 +649,9 @@ def check_required_files() -> list[str]:
     return [str(file) for file in required_files if not file.exists()]
 
 
+# ============================================================
+# 분석 (캐시)
+# ============================================================
 @st.cache_data(show_spinner=False)
 def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool]:
     market_rows = []
@@ -695,31 +785,18 @@ def analyze_stocks(
     return result, error_df
 
 
-def apply_screen_and_score(
-    result: pd.DataFrame,
-    *,
-    min_dollar_volume: float,
-    max_ret20: float,
-    max_ma20_dist: float,
-    max_day_gain5: float,
-    bal_mom_pct: float,
-    bal_ret20_max: float,
-    bal_ma20_min: float,
-    bal_ma20_max: float,
-    bal_day_gain5: float,
-    bal_vol_pct: float,
-    max_stop_loss: float,
-    spy_market_ok: bool,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    result = result.copy()
-
+# ============================================================
+# 스크리닝 / 점수 / 분류 / 매매 계획
+# ============================================================
+def _apply_screen_flags(result: pd.DataFrame, params: ScreenParams) -> None:
+    """개별 필터 통과 여부와 최종 ScreenOK 플래그를 채운다."""
     result["AbsMomentumOK"] = result["Momentum6_1M"] > 0
     result["RelativeMomentumOK"] = result["RelativeMomentum"] > 0
-    result["LiquidityOK"] = result["AvgDollar20"] >= min_dollar_volume
+    result["LiquidityOK"] = result["AvgDollar20"] >= params.min_dollar_volume
     result["OverheatOK"] = (
-        (result["Return20"] <= max_ret20)
-        & (result["MA20Dist"] <= max_ma20_dist)
-        & (result["MaxDayGain5"] <= max_day_gain5)
+        (result["Return20"] <= params.max_ret20)
+        & (result["MA20Dist"] <= params.max_ma20_dist)
+        & (result["MaxDayGain5"] <= params.max_day_gain5)
     )
     result["ScreenOK"] = (
         result["Trend"]
@@ -729,13 +806,15 @@ def apply_screen_and_score(
         & result["OverheatOK"]
     )
 
-    filter_summary = pd.DataFrame(
+
+def _build_filter_summary(result: pd.DataFrame, params: ScreenParams) -> pd.DataFrame:
+    return pd.DataFrame(
         {
             "조건": [
                 "MA 상승추세",
                 "6-1M > 0",
                 "SPY 상대강도 > 0",
-                f"20일 평균 거래대금 >= ${min_dollar_volume / 1_000_000:,.0f}M",
+                f"20일 평균 거래대금 >= ${params.min_dollar_volume / 1_000_000:,.0f}M",
                 "과열 필터 통과",
                 "전체 조건 통과",
             ],
@@ -750,22 +829,23 @@ def apply_screen_and_score(
         }
     )
 
-    candidates = result[result["ScreenOK"]].copy()
-    if candidates.empty:
-        return candidates, filter_summary
 
-    # 후보 종목 내 percentile
+def _score_candidates(candidates: pd.DataFrame) -> None:
+    """후보 종목 내 백분위와 BuyScore(100점)를 계산한다."""
     candidates["MomentumPct"] = candidates["Momentum6_1M"].rank(pct=True)
     candidates["LiquidityPct"] = candidates["AvgDollar20"].rank(pct=True)
     candidates["VolatilityPct"] = candidates["Volatility20"].rank(pct=True)
 
-    # BuyScore 100점
-    candidates["MomentumScore"] = candidates["MomentumPct"] * 45
-    candidates["DistanceScore"] = (1 - abs(candidates["MA20Dist"] - 0.05) / 0.07).clip(
-        0, 1
-    ) * 30
-    candidates["StabilityScore"] = (1 - candidates["VolatilityPct"]) * 20
-    candidates["LiquidityScore"] = candidates["LiquidityPct"] * 5
+    distance_fit = (
+        1 - abs(candidates["MA20Dist"] - IDEAL_MA20_DIST) / MA20_DIST_TOLERANCE
+    ).clip(0, 1)
+
+    candidates["MomentumScore"] = candidates["MomentumPct"] * SCORE_WEIGHT_MOMENTUM
+    candidates["DistanceScore"] = distance_fit * SCORE_WEIGHT_DISTANCE
+    candidates["StabilityScore"] = (
+        1 - candidates["VolatilityPct"]
+    ) * SCORE_WEIGHT_STABILITY
+    candidates["LiquidityScore"] = candidates["LiquidityPct"] * SCORE_WEIGHT_LIQUIDITY
     candidates["BuyScore"] = (
         candidates["MomentumScore"]
         + candidates["DistanceScore"]
@@ -773,48 +853,41 @@ def apply_screen_and_score(
         + candidates["LiquidityScore"]
     )
 
-    # 유형 분류: 앞 조건 우선
+
+def _classify_types(candidates: pd.DataFrame, params: ScreenParams) -> None:
+    """유형(급등주의/과열주의/균형형/강한추세/저과열/일반)과 위험도·설명을 채운다."""
+    # 앞 조건이 우선한다.
     balanced = (
-        (candidates["MomentumPct"] >= bal_mom_pct)
-        & candidates["Return20"].between(0, bal_ret20_max)
-        & candidates["MA20Dist"].between(bal_ma20_min, bal_ma20_max)
-        & (candidates["MaxDayGain5"] <= bal_day_gain5)
-        & (candidates["VolatilityPct"] <= bal_vol_pct)
+        (candidates["MomentumPct"] >= params.bal_mom_pct)
+        & candidates["Return20"].between(0, params.bal_ret20_max)
+        & candidates["MA20Dist"].between(params.bal_ma20_min, params.bal_ma20_max)
+        & (candidates["MaxDayGain5"] <= params.bal_day_gain5)
+        & (candidates["VolatilityPct"] <= params.bal_vol_pct)
     )
-    surge = (candidates["MaxDayGain5"] > 0.10) | (candidates["Return20"] > 0.20)
-    overheated = candidates["MA20Dist"] > 0.09
-    strong = (candidates["MomentumPct"] >= 0.85) & (candidates["MA20Dist"] <= 0.10)
-    low_heat = (candidates["MA20Dist"] < 0.03) & (candidates["Return20"] < 0.08)
+    surge = (candidates["MaxDayGain5"] > SURGE_DAY_GAIN5) | (
+        candidates["Return20"] > SURGE_RETURN20
+    )
+    overheated = candidates["MA20Dist"] > OVERHEAT_MA20_DIST
+    strong = (candidates["MomentumPct"] >= STRONG_MOMENTUM_PCT) & (
+        candidates["MA20Dist"] <= STRONG_MAX_MA20_DIST
+    )
+    low_heat = (candidates["MA20Dist"] < LOW_HEAT_MA20_DIST) & (
+        candidates["Return20"] < LOW_HEAT_RETURN20
+    )
 
     candidates["Type"] = np.select(
         [surge, overheated, balanced, strong, low_heat],
         ["급등주의", "과열주의", "균형형", "강한추세", "저과열"],
         default="일반",
     )
+    candidates["Risk"] = candidates["Type"].map(TYPE_RISK)
+    candidates["Explain"] = candidates["Type"].map(TYPE_EXPLAIN)
 
-    # 유형별 위험도 / 설명
-    risk_map = {
-        "강한추세": "높음",
-        "급등주의": "높음",
-        "과열주의": "높음",
-        "균형형": "낮음",
-        "저과열": "낮음",
-        "일반": "보통",
-    }
-    explain_map = {
-        "강한추세": "추세는 매우 강하지만 이미 많이 오른 종목",
-        "급등주의": "최근 급등하여 추격매수에 주의할 종목",
-        "과열주의": "상승추세지만 MA20에서 다소 멀어진 종목",
-        "균형형": "추세·모멘텀·과열도의 균형이 좋은 종목",
-        "저과열": "과열은 적지만 추가 상승 힘을 확인할 종목",
-        "일반": "무난한 상승추세 종목",
-    }
-    candidates["Risk"] = candidates["Type"].map(risk_map)
-    candidates["Explain"] = candidates["Type"].map(explain_map)
 
-    # --------------------------------------------------------
-    # 매매 계획
-    # --------------------------------------------------------
+def _build_trade_columns(
+    candidates: pd.DataFrame, params: ScreenParams, spy_market_ok: bool
+) -> None:
+    """매수가/손절가/목표가와 현재 단계·매도 신호를 채운다."""
     # BUY_PRICE에 실제 보유 매수가가 있으면 우선 사용하고,
     # 없으면 현재가를 신규 매수가로 사용한다.
     candidates["EntryPrice"] = (
@@ -824,7 +897,7 @@ def apply_screen_and_score(
     # MA60 또는 최대 허용 손실률 중 더 높은 가격을 자동 손절가로 사용
     auto_stop = np.maximum(
         candidates["MA60"],
-        candidates["EntryPrice"] * (1 - max_stop_loss),
+        candidates["EntryPrice"] * (1 - params.max_stop_loss),
     )
     candidates["StopPrice"] = (
         candidates["Ticker"]
@@ -856,18 +929,43 @@ def apply_screen_and_score(
     )
     candidates["BuyAllowed"] = "허용" if spy_market_ok else "중단"
 
-    candidates = candidates.sort_values("BuyScore", ascending=False).reset_index(
-        drop=True
-    )
-    candidates["Rank"] = np.arange(1, len(candidates) + 1)
 
-    # 화면 표시용 단위
+def _add_display_units(candidates: pd.DataFrame) -> None:
+    """화면 표시용 % / $M 단위 컬럼을 추가한다."""
     candidates["Momentum6_1M_%"] = candidates["Momentum6_1M"] * 100
     candidates["RelativeMomentum_%"] = candidates["RelativeMomentum"] * 100
     candidates["Return20_%"] = candidates["Return20"] * 100
     candidates["MA20Dist_%"] = candidates["MA20Dist"] * 100
     candidates["Volatility20_%"] = candidates["Volatility20"] * 100
     candidates["AvgDollar20_M"] = candidates["AvgDollar20"] / 1_000_000
+
+
+def apply_screen_and_score(
+    result: pd.DataFrame,
+    params: ScreenParams,
+    *,
+    spy_market_ok: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """스크리닝 → 점수 → 유형 분류 → 매매 계획까지 수행한다."""
+    result = result.copy()
+
+    _apply_screen_flags(result, params)
+    filter_summary = _build_filter_summary(result, params)
+
+    candidates = result[result["ScreenOK"]].copy()
+    if candidates.empty:
+        return candidates, filter_summary
+
+    _score_candidates(candidates)
+    _classify_types(candidates, params)
+    _build_trade_columns(candidates, params, spy_market_ok)
+
+    candidates = candidates.sort_values("BuyScore", ascending=False).reset_index(
+        drop=True
+    )
+    candidates["Rank"] = np.arange(1, len(candidates) + 1)
+
+    _add_display_units(candidates)
 
     return candidates, filter_summary
 
@@ -928,6 +1026,9 @@ def build_trade_plan(candidates: pd.DataFrame, top_n: int) -> pd.DataFrame:
     return trade_plan
 
 
+# ============================================================
+# 차트
+# ============================================================
 def make_candle_chart(
     ticker: str,
     candidates: pd.DataFrame,
@@ -1052,116 +1153,128 @@ def make_candle_chart(
     return fig
 
 
-def display_dataframe(df: pd.DataFrame, *, height: int | None = None) -> None:
-    """DataFrame을 컨테이너 너비에 맞춰 표시한다."""
-    kwargs = {
-        "width": "stretch",
-        "hide_index": True,
-    }
-    if height is not None:
-        kwargs["height"] = height
-    st.dataframe(df, **kwargs)
-
-
 # ============================================================
-# Session state
+# 사이드바
 # ============================================================
-for key, default in {
-    "auto_update_done": False,
-    "auto_update_info": None,
-    "auto_update_error": None,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+def init_session_state() -> None:
+    for key, default in {
+        "auto_update_done": False,
+        "auto_update_info": None,
+        "auto_update_error": None,
+    }.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
 
 
-# ============================================================
-# 화면
-# ============================================================
-st.title("📈 미국 주식 상승추세 스크리너")
-st.caption(
-    "앱을 열면 S&P 500 + SPY/QQQ 데이터를 자동으로 확인·갱신한 뒤 "
-    "상승추세·모멘텀·상대강도·유동성·과열도를 이용해 후보 종목을 자동 분석합니다."
-)
+def render_sidebar() -> SidebarConfig:
+    with st.sidebar:
+        st.header("분석 설정")
 
-with st.sidebar:
-    st.header("분석 설정")
+        with st.expander("자동 데이터 갱신 설정", expanded=False):
+            start_date = st.text_input("최초 다운로드 시작일", "2015-01-01")
+            st.caption(
+                f"기존 데이터는 마지막 저장일 기준 최근 {REFRESH_OVERLAP_DAYS}일만 "
+                "겹쳐 자동 갱신합니다."
+            )
+            batch_size = st.number_input(
+                "다운로드 배치 크기",
+                min_value=5,
+                max_value=100,
+                value=20,
+                step=5,
+            )
+            st.caption(
+                "앱 세션 시작 시 최신 거래일을 한 번 확인합니다. "
+                "이미 최신인 종목은 다운로드하지 않습니다."
+            )
 
-    with st.expander("자동 데이터 갱신 설정", expanded=False):
-        start_date = st.text_input("최초 다운로드 시작일", "2015-01-01")
-        # 자동 갱신은 마지막 저장일 기준 최근 3일만 겹쳐 다운로드합니다.
-        refresh_days = 3
-        st.caption("기존 데이터는 마지막 저장일 기준 최근 3일만 겹쳐 자동 갱신합니다.")
-        batch_size = st.number_input(
-            "다운로드 배치 크기",
-            min_value=5,
-            max_value=100,
-            value=20,
-            step=5,
-        )
-        st.caption(
-            "앱 세션 시작 시 최신 거래일을 한 번 확인합니다. "
-            "이미 최신인 종목은 다운로드하지 않습니다."
-        )
+        # 필요할 때만 네트워크 갱신을 다시 수행
+        if st.button("🔄 지금 강제 갱신", type="primary", width="stretch"):
+            st.session_state.auto_update_done = False
+            st.session_state.auto_update_info = None
+            st.session_state.auto_update_error = None
+            st.cache_data.clear()
+            st.rerun()
 
-    # 필요할 때만 네트워크 갱신을 다시 수행
-    if st.button("🔄 지금 강제 갱신", type="primary", width="stretch"):
-        st.session_state.auto_update_done = False
-        st.session_state.auto_update_info = None
-        st.session_state.auto_update_error = None
-        st.cache_data.clear()
-        st.rerun()
+        chart_type = st.selectbox("종목 유형", TYPE_OPTIONS, index=0, key="chart_type")
 
-    chart_type = st.selectbox("종목 유형", TYPE_OPTIONS, index=0, key="chart_type")
+        with st.expander("기본 필터", expanded=False):
+            min_rows = st.number_input("최소 데이터 행 수", 120, 1000, 130, 10)
+            min_dollar_volume_m = st.number_input(
+                "20일 평균 거래대금 최소($M)", 1.0, 1000.0, 20.0, 5.0
+            )
+            max_ret20_pct = st.number_input("20일 수익률 상한(%)", 1.0, 100.0, 25.0, 1.0)
+            max_ma20_dist_pct = st.number_input(
+                "MA20 이격 상한(%)", 1.0, 50.0, 12.0, 1.0
+            )
+            max_day_gain5_pct = st.number_input(
+                "최근 5일 최대 일간상승률 상한(%)", 1.0, 50.0, 15.0, 1.0
+            )
 
-    with st.expander("기본 필터", expanded=False):
-        min_rows = st.number_input("최소 데이터 행 수", 120, 1000, 130, 10)
-        min_dollar_volume_m = st.number_input(
-            "20일 평균 거래대금 최소($M)", 1.0, 1000.0, 20.0, 5.0
-        )
-        max_ret20_pct = st.number_input("20일 수익률 상한(%)", 1.0, 100.0, 25.0, 1.0)
-        max_ma20_dist_pct = st.number_input("MA20 이격 상한(%)", 1.0, 50.0, 12.0, 1.0)
-        max_day_gain5_pct = st.number_input(
-            "최근 5일 최대 일간상승률 상한(%)", 1.0, 50.0, 15.0, 1.0
-        )
+        with st.expander("균형형 분류 기준", expanded=False):
+            bal_mom_pct_pct = st.slider("모멘텀 백분위 최소", 0, 100, 70, 5)
+            bal_ret20_max_pct = st.number_input(
+                "균형형 20일 수익률 상한(%)", 0.0, 100.0, 15.0, 1.0
+            )
+            bal_ma20_min_pct = st.number_input(
+                "균형형 MA20 이격 최소(%)", 0.0, 30.0, 2.0, 0.5
+            )
+            bal_ma20_max_pct = st.number_input(
+                "균형형 MA20 이격 최대(%)", 0.0, 30.0, 8.0, 0.5
+            )
+            bal_day_gain5_pct = st.number_input(
+                "균형형 최근 5일 최대 상승률(%)", 0.0, 50.0, 10.0, 1.0
+            )
+            bal_vol_pct_pct = st.slider("균형형 변동성 백분위 최대", 0, 100, 70, 5)
 
-    with st.expander("균형형 분류 기준", expanded=False):
-        bal_mom_pct_pct = st.slider("모멘텀 백분위 최소", 0, 100, 70, 5)
-        bal_ret20_max_pct = st.number_input(
-            "균형형 20일 수익률 상한(%)", 0.0, 100.0, 15.0, 1.0
-        )
-        bal_ma20_min_pct = st.number_input(
-            "균형형 MA20 이격 최소(%)", 0.0, 30.0, 2.0, 0.5
-        )
-        bal_ma20_max_pct = st.number_input(
-            "균형형 MA20 이격 최대(%)", 0.0, 30.0, 8.0, 0.5
-        )
-        bal_day_gain5_pct = st.number_input(
-            "균형형 최근 5일 최대 상승률(%)", 0.0, 50.0, 10.0, 1.0
-        )
-        bal_vol_pct_pct = st.slider("균형형 변동성 백분위 최대", 0, 100, 70, 5)
+        with st.expander("매매/출력 설정", expanded=False):
+            max_stop_loss_pct = st.number_input("최대 손절폭(%)", 1.0, 30.0, 8.0, 0.5)
+            top_n = st.number_input("추천 종목 수", 5, 100, 20, 5)
+            chart_n = st.number_input("차트 개수", 1, 30, 10, 1)
+            chart_days = st.slider("차트 표시 거래일", 120, 500, 250, 10)
 
-    with st.expander("매매/출력 설정", expanded=False):
-        max_stop_loss_pct = st.number_input("최대 손절폭(%)", 1.0, 30.0, 8.0, 0.5)
-        top_n = st.number_input("추천 종목 수", 5, 100, 20, 5)
-        chart_n = st.number_input("차트 개수", 1, 30, 10, 1)
-        chart_days = st.slider("차트 표시 거래일", 120, 500, 250, 10)
+        if st.button("분석 캐시 새로고침", width="stretch"):
+            st.cache_data.clear()
+            st.rerun()
 
-    if st.button("분석 캐시 새로고침", width="stretch"):
-        st.cache_data.clear()
-        st.rerun()
+        st.divider()
+        st.caption(f"OS: {platform.system()} | matplotlib font: {KOREAN_FONT}")
+        if OPEN_FILE_LIMIT is not None:
+            st.caption(f"열린 파일 제한(soft): {OPEN_FILE_LIMIT:,}")
+        st.caption(f"데이터 폴더: {BASE_DIR.resolve()}")
 
-    st.divider()
-    st.caption(f"OS: {platform.system()} | matplotlib font: {KOREAN_FONT}")
-    if OPEN_FILE_LIMIT is not None:
-        st.caption(f"열린 파일 제한(soft): {OPEN_FILE_LIMIT:,}")
-    st.caption(f"데이터 폴더: {BASE_DIR.resolve()}")
+    screen = ScreenParams(
+        min_dollar_volume=min_dollar_volume_m * 1_000_000,
+        max_ret20=max_ret20_pct / 100,
+        max_ma20_dist=max_ma20_dist_pct / 100,
+        max_day_gain5=max_day_gain5_pct / 100,
+        bal_mom_pct=bal_mom_pct_pct / 100,
+        bal_ret20_max=bal_ret20_max_pct / 100,
+        bal_ma20_min=bal_ma20_min_pct / 100,
+        bal_ma20_max=bal_ma20_max_pct / 100,
+        bal_day_gain5=bal_day_gain5_pct / 100,
+        bal_vol_pct=bal_vol_pct_pct / 100,
+        max_stop_loss=max_stop_loss_pct / 100,
+    )
+    return SidebarConfig(
+        start_date=start_date,
+        batch_size=int(batch_size),
+        chart_type=chart_type,
+        min_rows=int(min_rows),
+        top_n=int(top_n),
+        chart_n=int(chart_n),
+        chart_days=int(chart_days),
+        screen=screen,
+    )
 
 
 # ============================================================
 # 1. 앱 시작 시 데이터 자동 확인 / 자동 갱신
 # ============================================================
-if not st.session_state.auto_update_done:
+def run_auto_update(cfg: SidebarConfig) -> None:
+    if st.session_state.auto_update_done:
+        return
+
     try:
         with st.spinner("S&P 500 목록과 최신 미국 거래일을 확인하는 중입니다..."):
             auto_sp500 = read_sp500_universe()
@@ -1170,8 +1283,7 @@ if not st.session_state.auto_update_done:
             pending, latest_count = find_pending_targets(
                 targets,
                 latest_market_date,
-                start_date,
-                int(refresh_days),
+                cfg.start_date,
             )
 
         pending_count = len(pending)
@@ -1181,11 +1293,7 @@ if not st.session_state.auto_update_done:
                 f"최신 완료 거래일 {latest_market_date.date()} 기준으로 "
                 f"{pending_count:,}개 종목을 자동 갱신합니다."
             )
-            failed = update_price_data(
-                pending,
-                download_end,
-                int(batch_size),
-            )
+            failed = update_price_data(pending, download_end, cfg.batch_size)
         else:
             failed = []
 
@@ -1230,12 +1338,25 @@ if not st.session_state.auto_update_done:
 # ============================================================
 # 2. 자동 갱신 상태
 # ============================================================
-auto_info = st.session_state.auto_update_info or {}
-auto_error = st.session_state.auto_update_error
+def render_data_status() -> None:
+    auto_info = st.session_state.auto_update_info or {}
+    auto_error = st.session_state.auto_update_error
 
-st.subheader("데이터 상태")
+    st.subheader("데이터 상태")
 
-if auto_info.get("mode") == "online":
+    if auto_info.get("mode") != "online":
+        st.warning(
+            "온라인 최신 데이터 확인에 실패했습니다. "
+            "저장된 로컬 CSV가 있으면 해당 데이터로 분석을 계속합니다."
+        )
+        if auto_error:
+            with st.expander("자동 갱신 오류 상세"):
+                st.code(auto_error)
+        st.caption(
+            f"로컬 SPY 마지막 날짜: {auto_info.get('latest_market_date', '확인 불가')}"
+        )
+        return
+
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("최신 거래일", auto_info.get("latest_market_date", "-"))
     d2.metric("S&P 500", f"{auto_info.get('sp500_count', 0):,}개")
@@ -1286,217 +1407,197 @@ if auto_info.get("mode") == "online":
 
                 st.markdown("##### 문제 종목 상세")
                 display_dataframe(problem.head(100))
-else:
-    st.warning(
-        "온라인 최신 데이터 확인에 실패했습니다. 저장된 로컬 CSV가 있으면 해당 데이터로 분석을 계속합니다."
-    )
-    if auto_error:
-        with st.expander("자동 갱신 오류 상세"):
-            st.code(auto_error)
-    st.caption(
-        f"로컬 SPY 마지막 날짜: {auto_info.get('latest_market_date', '확인 불가')}"
-    )
 
 
 # ============================================================
-# 3. 필수 파일 확인
+# 3~4. 필수 파일 확인 + 자동 분석
 # ============================================================
-missing = check_required_files()
-if missing:
-    st.error(
-        "자동 갱신 후에도 분석에 필요한 파일이 없습니다. "
-        "네트워크 연결을 확인한 뒤 사이드바의 '지금 강제 갱신'을 실행하세요.\n\n"
-        + "\n".join(f"- {file}" for file in missing)
-    )
-    st.stop()
-
-
-# ============================================================
-# 4. 자동 분석
-# ============================================================
-st.divider()
-st.subheader("상승추세 스크리닝 + BuyScore + 매매 계획")
-
-try:
-    with st.spinner("시장 상태와 S&P 500 종목을 자동 분석하는 중입니다..."):
-        sp500 = pd.read_csv(SP500_FILE)
-        market, spy_date, spy_mom, spy_market_ok = analyze_market()
-        result, error_df = analyze_stocks(
-            sp500,
-            spy_date,
-            spy_mom,
-            min_rows=int(min_rows),
+def check_required_files_or_stop() -> None:
+    missing = check_required_files()
+    if missing:
+        st.error(
+            "자동 갱신 후에도 분석에 필요한 파일이 없습니다. "
+            "네트워크 연결을 확인한 뒤 사이드바의 '지금 강제 갱신'을 실행하세요.\n\n"
+            + "\n".join(f"- {file}" for file in missing)
         )
+        st.stop()
 
-        if result.empty:
-            st.error("분석 가능한 종목이 없습니다.")
-            st.stop()
 
-        candidates, filter_summary = apply_screen_and_score(
-            result,
-            min_dollar_volume=min_dollar_volume_m * 1_000_000,
-            max_ret20=max_ret20_pct / 100,
-            max_ma20_dist=max_ma20_dist_pct / 100,
-            max_day_gain5=max_day_gain5_pct / 100,
-            bal_mom_pct=bal_mom_pct_pct / 100,
-            bal_ret20_max=bal_ret20_max_pct / 100,
-            bal_ma20_min=bal_ma20_min_pct / 100,
-            bal_ma20_max=bal_ma20_max_pct / 100,
-            bal_day_gain5=bal_day_gain5_pct / 100,
-            bal_vol_pct=bal_vol_pct_pct / 100,
-            max_stop_loss=max_stop_loss_pct / 100,
-            spy_market_ok=spy_market_ok,
-        )
+def run_analysis(cfg: SidebarConfig):
+    st.divider()
+    st.subheader("상승추세 스크리닝 + BuyScore + 매매 계획")
 
-        if not candidates.empty:
-            candidates.to_csv(OUTPUT_FILE, index=False)
+    try:
+        with st.spinner("시장 상태와 S&P 500 종목을 자동 분석하는 중입니다..."):
+            sp500 = pd.read_csv(SP500_FILE)
+            market, spy_date, spy_mom, spy_market_ok = analyze_market()
+            result, error_df = analyze_stocks(
+                sp500,
+                spy_date,
+                spy_mom,
+                min_rows=cfg.min_rows,
+            )
 
-except Exception as exc:
-    st.exception(exc)
-    st.stop()
+            if result.empty:
+                st.error("분석 가능한 종목이 없습니다.")
+                st.stop()
+
+            candidates, filter_summary = apply_screen_and_score(
+                result,
+                cfg.screen,
+                spy_market_ok=spy_market_ok,
+            )
+
+            if not candidates.empty:
+                candidates.to_csv(OUTPUT_FILE, index=False)
+
+    except Exception as exc:
+        st.exception(exc)
+        st.stop()
+
+    return market, spy_date, spy_market_ok, result, error_df, candidates, filter_summary
 
 
 # ============================================================
 # 5. 시장 상태
 # ============================================================
-spy_row = market.loc[market["Ticker"] == "SPY"].iloc[0]
-market_state = "상승장" if spy_market_ok else "방어장"
+def render_market_state(
+    market: pd.DataFrame,
+    spy_date: pd.Timestamp,
+    spy_market_ok: bool,
+    result: pd.DataFrame,
+    candidates: pd.DataFrame,
+    error_df: pd.DataFrame,
+    filter_summary: pd.DataFrame,
+) -> None:
+    spy_row = market.loc[market["Ticker"] == "SPY"].iloc[0]
+    market_state = "상승장" if spy_market_ok else "방어장"
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("분석 기준일", str(pd.Timestamp(spy_date).date()))
-m2.metric("SPY", f"${spy_row['Close']:,.2f}")
-m3.metric("SPY MA200", f"${spy_row['MA200']:,.2f}")
-m4.metric("시장 상태", market_state)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("분석 기준일", str(pd.Timestamp(spy_date).date()))
+    m2.metric("SPY", f"${spy_row['Close']:,.2f}")
+    m3.metric("SPY MA200", f"${spy_row['MA200']:,.2f}")
+    m4.metric("시장 상태", market_state)
 
-if not spy_market_ok:
-    st.warning(
-        "SPY가 MA200 아래에 있습니다. 신규 매수는 중단하거나 보수적으로 판단하는 구간입니다."
-    )
+    if not spy_market_ok:
+        st.warning(
+            "SPY가 MA200 아래에 있습니다. "
+            "신규 매수는 중단하거나 보수적으로 판단하는 구간입니다."
+        )
 
-a1, a2 = st.columns(2)
-a1.metric("분석 성공", f"{len(result):,}개")
-a2.metric("최종 후보", f"{len(candidates):,}개")
+    a1, a2 = st.columns(2)
+    a1.metric("분석 성공", f"{len(result):,}개")
+    a2.metric("최종 후보", f"{len(candidates):,}개")
 
-with st.expander("SPY / QQQ 시장 상태와 필터 통과 현황", expanded=False):
-    market_show = market.copy()
-    market_show["Date"] = pd.to_datetime(market_show["Date"]).dt.date
-    market_show["Momentum6_1M_%"] = market_show["Momentum6_1M"] * 100
-    market_show["AboveMA200"] = market_show["AboveMA200"].map(
-        {True: "위", False: "아래"}
-    )
-    display_dataframe(
-        market_show[
-            ["Ticker", "Date", "Close", "MA200", "AboveMA200", "Momentum6_1M_%"]
-        ].round(2)
-    )
-    st.markdown("#### 필터 통과 현황")
-    display_dataframe(filter_summary)
+    with st.expander("SPY / QQQ 시장 상태와 필터 통과 현황", expanded=False):
+        market_show = market.copy()
+        market_show["Date"] = pd.to_datetime(market_show["Date"]).dt.date
+        market_show["Momentum6_1M_%"] = market_show["Momentum6_1M"] * 100
+        market_show["AboveMA200"] = market_show["AboveMA200"].map(
+            {True: "위", False: "아래"}
+        )
+        display_dataframe(
+            market_show[
+                ["Ticker", "Date", "Close", "MA200", "AboveMA200", "Momentum6_1M_%"]
+            ].round(2)
+        )
+        st.markdown("#### 필터 통과 현황")
+        display_dataframe(filter_summary)
 
-    if error_df is not None and not error_df.empty:
-        st.markdown(f"#### 제외/오류 종목 ({len(error_df)}개)")
-        display_dataframe(error_df.head(200))
+        if error_df is not None and not error_df.empty:
+            st.markdown(f"#### 제외/오류 종목 ({len(error_df)}개)")
+            display_dataframe(error_df.head(200))
 
 
 # ============================================================
 # 6. 추천 결과
 # ============================================================
-if candidates.empty:
-    st.warning("현재 설정에서 모든 조건을 통과한 종목이 없습니다.")
-    st.stop()
-
-show_cols = [
-    "Rank",
-    "Ticker",
-    "Name",
-    "Sector",
-    "Type",
-    "Risk",
-    "BuyScore",
+_ID_COLS = ["Rank", "Ticker", "Name", "Sector"]
+_PCT_COLS = [
     "Momentum6_1M_%",
     "RelativeMomentum_%",
     "Return20_%",
     "MA20Dist_%",
+]
+
+RECOMMENDATION_COLS = [
+    *_ID_COLS,
+    "Type",
+    "Risk",
+    "BuyScore",
+    *_PCT_COLS,
     "Volatility20_%",
     "AvgDollar20_M",
     "BuyAllowed",
     "Explain",
 ]
+BALANCED_COLS = [*_ID_COLS, "BuyScore", *_PCT_COLS, "Volatility20_%"]
+SELECTED_COLS = [*_ID_COLS, "Type", "Risk", "BuyScore", *_PCT_COLS, "Explain"]
 
-title_prefix = "매수 후보" if spy_market_ok else "관심 종목"
-st.markdown(f"#### {title_prefix} TOP {min(int(top_n), len(candidates))}")
-display_dataframe(candidates[show_cols].head(int(top_n)).round(2))
 
-csv_bytes = candidates.to_csv(index=False).encode("utf-8-sig")
-st.download_button(
-    "분석 결과 CSV 다운로드",
-    data=csv_bytes,
-    file_name="us_stock_analysis_result.csv",
-    mime="text/csv",
-)
+def render_recommendations(
+    candidates: pd.DataFrame, spy_market_ok: bool, top_n: int
+) -> None:
+    title_prefix = "매수 후보" if spy_market_ok else "관심 종목"
+    st.markdown(f"#### {title_prefix} TOP {min(top_n, len(candidates))}")
+    display_dataframe(candidates[RECOMMENDATION_COLS].head(top_n).round(2))
 
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown("#### 유형별 종목 수")
-    type_count = (
-        candidates["Type"].value_counts().rename_axis("Type").reset_index(name="종목수")
+    csv_bytes = candidates.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "분석 결과 CSV 다운로드",
+        data=csv_bytes,
+        file_name="us_stock_analysis_result.csv",
+        mime="text/csv",
     )
-    display_dataframe(type_count)
 
-with c2:
-    st.markdown("#### 균형형 종목")
-    balanced_cols = [
-        "Rank",
-        "Ticker",
-        "Name",
-        "Sector",
-        "BuyScore",
-        "Momentum6_1M_%",
-        "RelativeMomentum_%",
-        "Return20_%",
-        "MA20Dist_%",
-        "Volatility20_%",
-    ]
-    balanced_result = candidates[candidates["Type"] == "균형형"]
-    if balanced_result.empty:
-        st.info("균형형 종목이 없습니다.")
-    else:
-        display_dataframe(balanced_result[balanced_cols].head(int(top_n)).round(2))
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 유형별 종목 수")
+        type_count = (
+            candidates["Type"]
+            .value_counts()
+            .rename_axis("Type")
+            .reset_index(name="종목수")
+        )
+        display_dataframe(type_count)
+
+    with c2:
+        st.markdown("#### 균형형 종목")
+        balanced_result = candidates[candidates["Type"] == "균형형"]
+        if balanced_result.empty:
+            st.info("균형형 종목이 없습니다.")
+        else:
+            display_dataframe(balanced_result[BALANCED_COLS].head(top_n).round(2))
 
 
 # ============================================================
 # 7. 선택 유형 / 매매 계획 / 모든 차트
 # ============================================================
-if chart_type == "전체":
-    selected = candidates.head(int(chart_n)).copy()
-else:
-    selected = (
-        candidates[candidates["Type"] == chart_type]
-        .sort_values("BuyScore", ascending=False)
-        .head(int(chart_n))
-        .copy()
-    )
+def render_charts(
+    candidates: pd.DataFrame,
+    spy_date: pd.Timestamp,
+    chart_type: str,
+    chart_n: int,
+    chart_days: int,
+) -> None:
+    if chart_type == "전체":
+        selected = candidates.head(chart_n).copy()
+    else:
+        selected = (
+            candidates[candidates["Type"] == chart_type]
+            .sort_values("BuyScore", ascending=False)
+            .head(chart_n)
+            .copy()
+        )
 
-st.divider()
-st.subheader(f"{chart_type} - TOP {int(chart_n)}")
+    st.divider()
+    st.subheader(f"{chart_type} - TOP {chart_n}")
 
-if selected.empty:
-    st.info(f"현재 조건을 만족하는 '{chart_type}' 종목이 없습니다.")
-else:
-    selected_cols = [
-        "Rank",
-        "Ticker",
-        "Name",
-        "Sector",
-        "Type",
-        "Risk",
-        "BuyScore",
-        "Momentum6_1M_%",
-        "RelativeMomentum_%",
-        "Return20_%",
-        "MA20Dist_%",
-        "Explain",
-    ]
-    display_dataframe(selected[selected_cols].round(2))
+    if selected.empty:
+        st.info(f"현재 조건을 만족하는 '{chart_type}' 종목이 없습니다.")
+        return
+
+    display_dataframe(selected[SELECTED_COLS].round(2))
 
     st.markdown("#### 매수 / 매도 계획")
     trade_plan = build_trade_plan(selected, len(selected))
@@ -1534,7 +1635,7 @@ else:
                 ticker,
                 candidates,
                 pd.Timestamp(spy_date),
-                chart_days=int(chart_days),
+                chart_days=chart_days,
             )
             st.pyplot(fig, width="stretch")
         except Exception as exc:
@@ -1546,7 +1647,56 @@ else:
         st.divider()
 
 
-st.caption(
-    "주의: 이 앱의 스크리닝 결과는 투자 판단을 자동으로 대신하지 않습니다. "
-    "데이터 지연·결측과 시장 급변 가능성을 함께 확인하세요."
-)
+# ============================================================
+# 메인
+# ============================================================
+def main() -> None:
+    init_session_state()
+
+    st.title("📈 미국 주식 상승추세 스크리너")
+    st.caption(
+        "앱을 열면 S&P 500 + SPY/QQQ 데이터를 자동으로 확인·갱신한 뒤 "
+        "상승추세·모멘텀·상대강도·유동성·과열도를 이용해 후보 종목을 자동 분석합니다."
+    )
+
+    cfg = render_sidebar()
+
+    run_auto_update(cfg)
+    render_data_status()
+    check_required_files_or_stop()
+
+    (
+        market,
+        spy_date,
+        spy_market_ok,
+        result,
+        error_df,
+        candidates,
+        filter_summary,
+    ) = run_analysis(cfg)
+
+    render_market_state(
+        market,
+        spy_date,
+        spy_market_ok,
+        result,
+        candidates,
+        error_df,
+        filter_summary,
+    )
+
+    if candidates.empty:
+        st.warning("현재 설정에서 모든 조건을 통과한 종목이 없습니다.")
+        st.stop()
+
+    render_recommendations(candidates, spy_market_ok, cfg.top_n)
+    render_charts(candidates, spy_date, cfg.chart_type, cfg.chart_n, cfg.chart_days)
+
+    st.caption(
+        "주의: 이 앱의 스크리닝 결과는 투자 판단을 자동으로 대신하지 않습니다. "
+        "데이터 지연·결측과 시장 급변 가능성을 함께 확인하세요."
+    )
+
+
+if __name__ == "__main__":
+    main()
