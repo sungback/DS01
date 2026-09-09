@@ -41,6 +41,7 @@ import mplfinance as mpf
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 
@@ -106,7 +107,49 @@ SP500_URL = (
 )
 MARKET_TICKERS = ["SPY", "QQQ"]
 VALID_TYPES = ["균형형", "강한추세", "저과열", "일반", "급등주의", "과열주의"]
-TYPE_OPTIONS = ["전체"] + VALID_TYPES
+TYPE_OPTIONS = ["전체", *VALID_TYPES]
+
+
+def keep_selectbox_options_at_top() -> None:
+    """Streamlit 1.56 selectbox의 잘못된 초기 가상 스크롤을 보정한다."""
+    components.html(
+        """
+        <script>
+        const parentDocument = window.parent.document;
+
+        const resetVirtualDropdown = () => {
+            const dropdowns = parentDocument.querySelectorAll(
+                'ul[data-testid="stSelectboxVirtualDropdown"] > div'
+            );
+
+            dropdowns.forEach((dropdown) => {
+                if (dropdown.dataset.topPositionReset === "true") {
+                    return;
+                }
+
+                dropdown.dataset.topPositionReset = "true";
+                window.requestAnimationFrame(() => {
+                    dropdown.scrollTop = 0;
+                    dropdown.dispatchEvent(
+                        new Event("scroll", { bubbles: true })
+                    );
+                });
+            });
+        };
+
+        new MutationObserver(resetVirtualDropdown).observe(
+            parentDocument.body,
+            { childList: true, subtree: true }
+        );
+        resetVirtualDropdown();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
+
+keep_selectbox_options_at_top()
 
 # 실제 보유 종목의 매수가/직접 손절가가 있다면 여기에 입력
 # 예: BUY_PRICE = {"AAPL": 220.0}
@@ -1010,9 +1053,9 @@ def make_candle_chart(
 
 
 def display_dataframe(df: pd.DataFrame, *, height: int | None = None) -> None:
-    """Streamlit 버전 차이와 관계없이 DataFrame을 넓게 표시한다."""
+    """DataFrame을 컨테이너 너비에 맞춰 표시한다."""
     kwargs = {
-        "use_container_width": True,
+        "width": "stretch",
         "hide_index": True,
     }
     if height is not None:
@@ -1062,14 +1105,16 @@ with st.sidebar:
         )
 
     # 필요할 때만 네트워크 갱신을 다시 수행
-    if st.button("🔄 지금 강제 갱신", type="primary", use_container_width=True):
+    if st.button("🔄 지금 강제 갱신", type="primary", width="stretch"):
         st.session_state.auto_update_done = False
         st.session_state.auto_update_info = None
         st.session_state.auto_update_error = None
         st.cache_data.clear()
         st.rerun()
 
-    with st.expander("기본 필터", expanded=True):
+    chart_type = st.selectbox("종목 유형", TYPE_OPTIONS, index=0, key="chart_type")
+
+    with st.expander("기본 필터", expanded=False):
         min_rows = st.number_input("최소 데이터 행 수", 120, 1000, 130, 10)
         min_dollar_volume_m = st.number_input(
             "20일 평균 거래대금 최소($M)", 1.0, 1000.0, 20.0, 5.0
@@ -1099,11 +1144,10 @@ with st.sidebar:
     with st.expander("매매/출력 설정", expanded=False):
         max_stop_loss_pct = st.number_input("최대 손절폭(%)", 1.0, 30.0, 8.0, 0.5)
         top_n = st.number_input("추천 종목 수", 5, 100, 20, 5)
-        chart_type = st.selectbox("종목 유형", TYPE_OPTIONS, index=0)
         chart_n = st.number_input("차트 개수", 1, 30, 10, 1)
         chart_days = st.slider("차트 표시 거래일", 120, 500, 250, 10)
 
-    if st.button("분석 캐시 새로고침", use_container_width=True):
+    if st.button("분석 캐시 새로고침", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 

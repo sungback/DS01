@@ -3098,7 +3098,7 @@ def render_action_filter_buttons(
                 if st.button(
                     label,
                     key=f"final_action_btn_{idx}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     clicked_action = action
 
