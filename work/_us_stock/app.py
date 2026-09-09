@@ -33,14 +33,8 @@ import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
 
 # Streamlit Cloud에서도 apt(packages.txt) 없이 한글 폰트를 사용한다.
-# requirements.txt에 koreanize-matplotlib==0.1.1 을 추가해야 한다.
-try:
-    import koreanize_matplotlib  # noqa: F401
-except ImportError as exc:
-    raise RuntimeError(
-        "한글 차트 표시를 위해 requirements.txt에 "
-        "'koreanize-matplotlib==0.1.1'을 추가하세요."
-    ) from exc
+# work/_us_stock/requirements.txt에 koreanize-matplotlib==0.1.1 필요
+import koreanize_matplotlib  # noqa: F401
 
 import mplfinance as mpf
 import numpy as np
@@ -982,10 +976,10 @@ def make_candle_chart(
 
 
 def display_dataframe(df: pd.DataFrame, *, height: int | None = None) -> None:
+    """Streamlit 버전 차이와 관계없이 DataFrame을 넓게 표시한다."""
     kwargs = {
-        "width": "stretch",
+        "use_container_width": True,
         "hide_index": True,
-        "lazy": False,
     }
     if height is not None:
         kwargs["height"] = height
