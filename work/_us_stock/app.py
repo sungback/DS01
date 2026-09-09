@@ -123,6 +123,15 @@ SCORE_WEIGHT_LIQUIDITY = 5
 IDEAL_MA20_DIST = 0.05
 MA20_DIST_TOLERANCE = 0.07
 
+# 캔들차트에 함께 그리는 이동평균과 색상
+CHART_MA_PERIODS = (20, 60, 120, 200)
+CHART_MA_COLORS = ("orange", "green", "purple", "black")
+# 매매 판단에 필요한 구간(MA20 이격·MA60/120 기울기)이 모두 들어오는 길이.
+# 종목 스크리닝의 최장 입력인 6-1M 모멘텀도 약 148 거래일이다.
+DEFAULT_CHART_DAYS = 120
+MIN_CHART_DAYS = 60
+MAX_CHART_DAYS = 250
+
 # 유형 분류 임계값
 SURGE_DAY_GAIN5 = 0.10
 SURGE_RETURN20 = 0.20
@@ -1033,34 +1042,47 @@ def make_candle_chart(
     ticker: str,
     candidates: pd.DataFrame,
     spy_date: pd.Timestamp,
-    chart_days: int = 250,
+    chart_days: int = DEFAULT_CHART_DAYS,
 ):
-    """MA20/60/120/200과 매수가·손절가·1R·2R을 포함한 캔들차트."""
-    df = pd.read_csv(STOCK_DIR / f"{ticker}.csv", parse_dates=["Date"])
-    df = (
-        df[df["Date"] <= spy_date]
+    """MA20/60/120/200과 매수가·손절가·1R·2R을 포함한 캔들차트.
+
+    이동평균은 전체 이력으로 먼저 계산한 뒤 표시 구간만 잘라낸다.
+    mplfinance의 mav= 옵션은 넘겨준 데이터로만 평균을 내기 때문에,
+    잘라낸 뒤 계산하면 화면 왼쪽에서 긴 이동평균선이 사라진다.
+    """
+    history = pd.read_csv(STOCK_DIR / f"{ticker}.csv", parse_dates=["Date"])
+    history = (
+        history[history["Date"] <= spy_date]
         .sort_values("Date")
         .drop_duplicates("Date")
-        .tail(chart_days)
-        .copy()
+        .set_index("Date")
     )
-    df = df.set_index("Date")
 
-    if df.empty:
+    if history.empty:
         raise ValueError("차트 데이터가 없습니다.")
+
+    # 전체 이력 길이가 기간보다 짧은 이동평균은 그리지 않는다.
+    available_ma = [
+        (period, color)
+        for period, color in zip(CHART_MA_PERIODS, CHART_MA_COLORS)
+        if len(history) >= period
+    ]
+    ma_frame = pd.DataFrame(
+        {f"MA{period}": history["Close"].rolling(period).mean() for period, _ in available_ma},
+        index=history.index,
+    )
+
+    df = history.tail(chart_days)
+    ma_frame = ma_frame.tail(chart_days)
 
     info = candidates.loc[candidates["Ticker"] == ticker].iloc[0]
 
     # 미국식 캔들 색상 대신 KOSPI 버전과 동일하게 상승=빨강, 하락=파랑
     market_colors = mpf.make_marketcolors(up="red", down="blue", inherit=True)
 
-    mav_periods = (20, 60, 120, 200) if len(df) >= 200 else (20, 60, 120)
-    mav_colors = ["orange", "green", "purple", "black"][: len(mav_periods)]
-
     mpf_style = mpf.make_mpf_style(
         base_mpf_style="yahoo",
         marketcolors=market_colors,
-        mavcolors=mav_colors,
         rc={
             "font.family": KOREAN_FONT,
             "font.weight": "normal",
@@ -1070,10 +1092,15 @@ def make_candle_chart(
     )
 
     with PLOT_LOCK:
+        ma_plots = [
+            mpf.make_addplot(ma_frame[f"MA{period}"], color=color, width=1.0)
+            for period, color in available_ma
+        ]
+
         fig, axes = mpf.plot(
             df[["Open", "High", "Low", "Close", "Volume"]],
             type="candle",
-            mav=mav_periods,
+            addplot=ma_plots,
             volume=True,
             style=mpf_style,
             figsize=(13, 7),
@@ -1090,10 +1117,9 @@ def make_candle_chart(
         # 오른쪽에 매매 가격 라벨을 표시할 공간 확보
         fig.subplots_adjust(right=0.78)
 
-        ma_labels = ["MA20", "MA60", "MA120", "MA200"][: len(mav_periods)]
         ma_legend = [
-            Line2D([0], [0], color=color, lw=2, label=label)
-            for color, label in zip(mav_colors, ma_labels)
+            Line2D([0], [0], color=color, lw=2, label=f"MA{period}")
+            for period, color in available_ma
         ]
 
         price_lines = [
@@ -1231,7 +1257,13 @@ def render_sidebar() -> SidebarConfig:
             max_stop_loss_pct = st.number_input("최대 손절폭(%)", 1.0, 30.0, 8.0, 0.5)
             top_n = st.number_input("추천 종목 수", 5, 100, 20, 5)
             chart_n = st.number_input("차트 개수", 1, 30, 10, 1)
-            chart_days = st.slider("차트 표시 거래일", 120, 500, 250, 10)
+            chart_days = st.slider(
+                "차트 표시 거래일",
+                MIN_CHART_DAYS,
+                MAX_CHART_DAYS,
+                DEFAULT_CHART_DAYS,
+                10,
+            )
 
         if st.button("분석 캐시 새로고침", width="stretch"):
             st.cache_data.clear()
