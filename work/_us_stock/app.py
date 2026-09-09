@@ -9,10 +9,12 @@ import logging
 import platform
 import time
 
+
 # macOS/Linux 열린 파일 수 제한 완화
 def raise_open_file_limit(target: int = 8192) -> int | None:
     try:
         import resource
+
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         new_soft = min(max(soft, target), hard)
         if new_soft > soft:
@@ -21,6 +23,7 @@ def raise_open_file_limit(target: int = 8192) -> int | None:
     except Exception:
         return None
 
+
 OPEN_FILE_LIMIT = raise_open_file_limit()
 
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
@@ -28,6 +31,17 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
+
+# Streamlit Cloud에서도 apt(packages.txt) 없이 한글 폰트를 사용한다.
+# requirements.txt에 koreanize-matplotlib==0.1.1 을 추가해야 한다.
+try:
+    import koreanize_matplotlib  # noqa: F401
+except ImportError as exc:
+    raise RuntimeError(
+        "한글 차트 표시를 위해 requirements.txt에 "
+        "'koreanize-matplotlib==0.1.1'을 추가하세요."
+    ) from exc
+
 import mplfinance as mpf
 import numpy as np
 import pandas as pd
@@ -112,20 +126,11 @@ PLOT_LOCK = RLock()
 # ============================================================
 # 한글 폰트
 # ============================================================
-def get_korean_font() -> str:
-    system = platform.system()
-    preferred = {
-        "Windows": "Malgun Gothic",
-        "Darwin": "AppleGothic",
-    }.get(system, "NanumGothic")
+# koreanize-matplotlib이 패키지에 포함된 NanumGothic을 등록하므로
+# Streamlit Cloud의 fonts-nanum(apt) 설치가 필요하지 않다.
+KOREAN_FONT = "NanumGothic"
 
-    available_fonts = {f.name for f in fm.fontManager.ttflist}
-    if preferred not in available_fonts:
-        return "DejaVu Sans"
-    return preferred
-
-
-KOREAN_FONT = get_korean_font()
+# Matplotlib 전체 그래프에 적용
 plt.rcParams["font.family"] = KOREAN_FONT
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["font.weight"] = "normal"
@@ -155,12 +160,12 @@ def read_sp500_universe() -> pd.DataFrame:
         sp500 = pd.read_csv(SP500_URL)
     except Exception as exc:
         if SP500_FILE.exists():
-            st.warning(f"S&P 500 목록 다운로드 실패. 기존 저장 파일을 사용합니다. ({exc})")
+            st.warning(
+                f"S&P 500 목록 다운로드 실패. 기존 저장 파일을 사용합니다. ({exc})"
+            )
             sp500 = pd.read_csv(SP500_FILE)
         else:
-            raise RuntimeError(
-                "S&P 500 목록 다운로드 실패 + 기존 CSV 없음"
-            ) from exc
+            raise RuntimeError("S&P 500 목록 다운로드 실패 + 기존 CSV 없음") from exc
 
     sp500 = sp500.rename(
         columns={
@@ -511,12 +516,8 @@ def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool]:
 
     market = pd.DataFrame(market_rows)
     spy_date = pd.Timestamp(market.loc[market["Ticker"] == "SPY", "Date"].iloc[0])
-    spy_mom = float(
-        market.loc[market["Ticker"] == "SPY", "Momentum6_1M"].iloc[0]
-    )
-    spy_market_ok = bool(
-        market.loc[market["Ticker"] == "SPY", "AboveMA200"].iloc[0]
-    )
+    spy_mom = float(market.loc[market["Ticker"] == "SPY", "Momentum6_1M"].iloc[0])
+    spy_market_ok = bool(market.loc[market["Ticker"] == "SPY", "AboveMA200"].iloc[0])
     return market, spy_date, spy_mom, spy_market_ok
 
 
@@ -689,9 +690,9 @@ def apply_screen_and_score(
 
     # BuyScore 100점
     candidates["MomentumScore"] = candidates["MomentumPct"] * 45
-    candidates["DistanceScore"] = (
-        1 - abs(candidates["MA20Dist"] - 0.05) / 0.07
-    ).clip(0, 1) * 30
+    candidates["DistanceScore"] = (1 - abs(candidates["MA20Dist"] - 0.05) / 0.07).clip(
+        0, 1
+    ) * 30
     candidates["StabilityScore"] = (1 - candidates["VolatilityPct"]) * 20
     candidates["LiquidityScore"] = candidates["LiquidityPct"] * 5
     candidates["BuyScore"] = (
@@ -755,7 +756,9 @@ def apply_screen_and_score(
         candidates["EntryPrice"] * (1 - max_stop_loss),
     )
     candidates["StopPrice"] = (
-        candidates["Ticker"].map(BUY_STOP).fillna(pd.Series(auto_stop, index=candidates.index))
+        candidates["Ticker"]
+        .map(BUY_STOP)
+        .fillna(pd.Series(auto_stop, index=candidates.index))
     )
 
     candidates["R"] = candidates["EntryPrice"] - candidates["StopPrice"]
@@ -782,7 +785,9 @@ def apply_screen_and_score(
     )
     candidates["BuyAllowed"] = "허용" if spy_market_ok else "중단"
 
-    candidates = candidates.sort_values("BuyScore", ascending=False).reset_index(drop=True)
+    candidates = candidates.sort_values("BuyScore", ascending=False).reset_index(
+        drop=True
+    )
     candidates["Rank"] = np.arange(1, len(candidates) + 1)
 
     # 화면 표시용 단위
@@ -800,25 +805,29 @@ def build_trade_plan(candidates: pd.DataFrame, top_n: int) -> pd.DataFrame:
     if candidates.empty:
         return pd.DataFrame()
 
-    trade_plan = candidates[
-        [
-            "Rank",
-            "Ticker",
-            "Name",
-            "Type",
-            "Risk",
-            "BuyScore",
-            "Close",
-            "MA20",
-            "MA60",
-            "EntryPrice",
-            "StopPrice",
-            "Target1R",
-            "Target2R",
-            "CurrentStage",
-            "SellSignal",
+    trade_plan = (
+        candidates[
+            [
+                "Rank",
+                "Ticker",
+                "Name",
+                "Type",
+                "Risk",
+                "BuyScore",
+                "Close",
+                "MA20",
+                "MA60",
+                "EntryPrice",
+                "StopPrice",
+                "Target1R",
+                "Target2R",
+                "CurrentStage",
+                "SellSignal",
+            ]
         ]
-    ].head(top_n).copy()
+        .head(top_n)
+        .copy()
+    )
 
     trade_plan = trade_plan.rename(
         columns={
@@ -834,7 +843,15 @@ def build_trade_plan(candidates: pd.DataFrame, top_n: int) -> pd.DataFrame:
         }
     )
 
-    price_cols = ["현재가", "MA20", "MA60", "매수가", "손절가", "1R(30%매도)", "2R(30%매도)"]
+    price_cols = [
+        "현재가",
+        "MA20",
+        "MA60",
+        "매수가",
+        "손절가",
+        "1R(30%매도)",
+        "2R(30%매도)",
+    ]
     trade_plan[price_cols] = trade_plan[price_cols].round(2)
     trade_plan["BuyScore"] = trade_plan["BuyScore"].round(2)
     return trade_plan
@@ -896,7 +913,7 @@ def make_candle_chart(
             f"{info['Name']} ({ticker}) | {info['Type']} | 위험도 {info['Risk']} | "
             f"BuyScore {info['BuyScore']:.1f}\n{info['Explain']}"
         )
-        ax.set_title(title, fontsize=11, pad=8)
+        ax.set_title(title, fontsize=11, pad=8, fontfamily=KOREAN_FONT)
 
         # 오른쪽에 매매 가격 라벨을 표시할 공간 확보
         fig.subplots_adjust(right=0.78)
@@ -931,6 +948,7 @@ def make_candle_chart(
                 f"{label} ${float(value):,.2f}",
                 transform=ax.get_yaxis_transform(),
                 fontsize=9,
+                fontfamily=KOREAN_FONT,
                 color=color,
                 va="center",
                 ha="left",
@@ -957,7 +975,7 @@ def make_candle_chart(
             handles=ma_legend + price_legend,
             loc="upper left",
             frameon=True,
-            fontsize=8,
+            prop={"family": KOREAN_FONT, "size": 8},
         )
 
     return fig
@@ -1203,7 +1221,9 @@ else:
     if auto_error:
         with st.expander("자동 갱신 오류 상세"):
             st.code(auto_error)
-    st.caption(f"로컬 SPY 마지막 날짜: {auto_info.get('latest_market_date', '확인 불가')}")
+    st.caption(
+        f"로컬 SPY 마지막 날짜: {auto_info.get('latest_market_date', '확인 불가')}"
+    )
 
 
 # ============================================================
@@ -1346,10 +1366,7 @@ c1, c2 = st.columns(2)
 with c1:
     st.markdown("#### 유형별 종목 수")
     type_count = (
-        candidates["Type"]
-        .value_counts()
-        .rename_axis("Type")
-        .reset_index(name="종목수")
+        candidates["Type"].value_counts().rename_axis("Type").reset_index(name="종목수")
     )
     display_dataframe(type_count)
 

@@ -46,6 +46,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from matplotlib.ticker import FuncFormatter
+import koreanize_matplotlib
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("upbit_analyzer")
@@ -69,8 +70,8 @@ OUTPUT_DIR = Path("output")
 RESULT_CSV = OUTPUT_DIR / "upbit_screener_240m_60m.csv"
 
 # --- 멀티 타임프레임 ---
-SCREEN_UNIT = 240   # 4시간봉: 메인 추세 스크리닝
-ENTRY_UNIT = 60     # 1시간봉: 진입 타이밍 확인
+SCREEN_UNIT = 240  # 4시간봉: 메인 추세 스크리닝
+ENTRY_UNIT = 60  # 1시간봉: 진입 타이밍 확인
 CANDLE_COUNT = 200  # 업비트 1회 조회 상한
 
 # --- 추세 조건 (4시간봉) ---
@@ -92,22 +93,22 @@ SWING_LEFT_BARS = 3
 SWING_RIGHT_BARS = 3
 
 # --- 1시간봉 진입 판단 ---
-ENTRY_PULLBACK_MIN_PCT = 0.0   # MA20 아래에서는 눌림 보너스를 주지 않는다
+ENTRY_PULLBACK_MIN_PCT = 0.0  # MA20 아래에서는 눌림 보너스를 주지 않는다
 ENTRY_PULLBACK_MAX_PCT = 3.0
 ENTRY_OVERHEAT_PCT = 8.0
 STRONG_RISE_24H_PCT = 8.0
-MIN_ENTRY_BARS = 65            # MA60 + 여유
+MIN_ENTRY_BARS = 65  # MA60 + 여유
 
 # --- MA/ATR 매매 계획 ---
-BUY_ZONE_ATR = 0.5             # 매수구간: MA20 ± 0.5 ATR
-STOP_MA60_ATR = 0.5            # 구조적 손절 후보: MA60 - 0.5 ATR
-MAX_STOP_ATR = 2.0             # 최대 손절폭
-MIN_RISK_ATR = 1.0             # 최소 손절폭
+BUY_ZONE_ATR = 0.5  # 매수구간: MA20 ± 0.5 ATR
+STOP_MA60_ATR = 0.5  # 구조적 손절 후보: MA60 - 0.5 ATR
+MAX_STOP_ATR = 2.0  # 최대 손절폭
+MIN_RISK_ATR = 1.0  # 최소 손절폭
 TP1_R = 1.5
 TP2_R = 2.5
 RUNNER_TRIGGER_R = 4.0
-TRAIL_ATR_MULT = 2.0           # 2차 익절 이후 Trail
-RUNNER_TRAIL_ATR_MULT = 1.5    # 4R 이후 강화 Trail
+TRAIL_ATR_MULT = 2.0  # 2차 익절 이후 Trail
+RUNNER_TRAIL_ATR_MULT = 1.5  # 4R 이후 강화 Trail
 
 TP1_SELL_PCT = 30
 TP2_SELL_PCT = 30
@@ -117,10 +118,10 @@ RUNNER_HOLD_PCT = 40
 LIQUIDITY_TIERS = ((10_000_000_000, 4.0), (3_000_000_000, 3.0), (1_000_000_000, 2.0))
 
 # --- 네트워크 ---
-REQUEST_INTERVAL = 0.12        # 초당 약 8회 (업비트 시세 API 한도는 초당 10회)
+REQUEST_INTERVAL = 0.12  # 초당 약 8회 (업비트 시세 API 한도는 초당 10회)
 MAX_RETRIES = 3
 REQUEST_TIMEOUT = 8
-MAX_WORKERS = 6                # 병렬 캔들 수집 워커 수
+MAX_WORKERS = 6  # 병렬 캔들 수집 워커 수
 
 CHART_BARS = 60
 
@@ -240,7 +241,9 @@ def _now_kst_naive(now_kst: Optional[pd.Timestamp] = None) -> pd.Timestamp:
     return ts.tz_convert("Asia/Seoul").tz_localize(None)
 
 
-def current_candle_start_kst(unit: int, now_kst: Optional[pd.Timestamp] = None) -> pd.Timestamp:
+def current_candle_start_kst(
+    unit: int, now_kst: Optional[pd.Timestamp] = None
+) -> pd.Timestamp:
     """진행 중인 캔들의 시작 시각(KST, tz-naive).
 
     업비트 분봉 경계는 UTC 기준으로 정렬되므로 240분봉은
@@ -293,17 +296,21 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ATR_Pct"] = df[ATR_COL] / df["close"].replace(0, np.nan) * 100
 
     # 거래량 EMA와 배율
-    df[VOLUME_EMA_COL] = df["volume"].ewm(
-        span=VOLUME_EMA_PERIOD, adjust=False, min_periods=VOLUME_EMA_PERIOD
-    ).mean()
+    df[VOLUME_EMA_COL] = (
+        df["volume"]
+        .ewm(span=VOLUME_EMA_PERIOD, adjust=False, min_periods=VOLUME_EMA_PERIOD)
+        .mean()
+    )
     df["VolumeRatio"] = df["volume"] / df[VOLUME_EMA_COL].replace(0, np.nan)
 
     df[RSI_COL] = _wilder_rsi(df["close"])
 
     # Dynamic RSI Zone: RSI EMA20 ± 1.5 × 최근 20봉 RSI 표준편차
-    center = df[RSI_COL].ewm(
-        span=DYNAMIC_RSI_PERIOD, adjust=False, min_periods=DYNAMIC_RSI_PERIOD
-    ).mean()
+    center = (
+        df[RSI_COL]
+        .ewm(span=DYNAMIC_RSI_PERIOD, adjust=False, min_periods=DYNAMIC_RSI_PERIOD)
+        .mean()
+    )
     band = DYNAMIC_RSI_STD_MULT * df[RSI_COL].rolling(DYNAMIC_RSI_PERIOD).std()
     df["RSI_Dynamic_Center"] = center
     df["RSI_Dynamic_Upper"] = (center + band).clip(0, 100)
@@ -378,9 +385,7 @@ def ma_trend(df: pd.DataFrame) -> tuple[bool, bool, dict[int, float]]:
     4시간봉 기준 MA20은 3봉(12h), MA60은 6봉(24h), MA120은 12봉(48h) 전과 비교한다.
     """
     latest = df.iloc[-1]
-    ordered = bool(
-        latest["MA5"] > latest["MA20"] > latest["MA60"] > latest["MA120"]
-    )
+    ordered = bool(latest["MA5"] > latest["MA20"] > latest["MA60"] > latest["MA120"])
 
     slopes: dict[int, float] = {}
     rising = True
@@ -439,10 +444,18 @@ def detect_swing_points(
     points = pd.concat(
         [
             pd.DataFrame(
-                {"timestamp": df.index[is_high], "kind": "high", "price": high[is_high].to_numpy()}
+                {
+                    "timestamp": df.index[is_high],
+                    "kind": "high",
+                    "price": high[is_high].to_numpy(),
+                }
             ),
             pd.DataFrame(
-                {"timestamp": df.index[is_low], "kind": "low", "price": low[is_low].to_numpy()}
+                {
+                    "timestamp": df.index[is_low],
+                    "kind": "low",
+                    "price": low[is_low].to_numpy(),
+                }
             ),
         ],
         ignore_index=True,
@@ -572,7 +585,9 @@ class UpbitClient:
                 )
 
             if 500 <= response.status_code < 600:
-                last_error = UpbitError(f"업비트 서버 오류: HTTP {response.status_code}")
+                last_error = UpbitError(
+                    f"업비트 서버 오류: HTTP {response.status_code}"
+                )
                 attempt += 1
                 self._delay_all(min(2**attempt, 4))
                 continue
@@ -819,8 +834,14 @@ def save_tickers(tickers: list[dict]) -> None:
 # ==========================================================================
 
 DEFAULT_PAIRS = [
-    "KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL",
-    "KRW-ADA", "KRW-DOGE", "KRW-DOT", "KRW-LINK",
+    "KRW-BTC",
+    "KRW-ETH",
+    "KRW-XRP",
+    "KRW-SOL",
+    "KRW-ADA",
+    "KRW-DOGE",
+    "KRW-DOT",
+    "KRW-LINK",
 ]
 
 
@@ -839,7 +860,7 @@ class Candles:
 @dataclass
 class TickerSnapshot:
     tickers: dict[str, dict]
-    source: str        # api / cache / stale_blocked / missing
+    source: str  # api / cache / stale_blocked / missing
     age_minutes: float
     warning: bool
     usable: bool
@@ -1016,13 +1037,15 @@ def filter_by_trade_value(
     return [
         symbol
         for symbol in pairs
-        if safe_float(tickers.get(symbol, {}).get("acc_trade_price_24h"), 0.0) >= minimum
+        if safe_float(tickers.get(symbol, {}).get("acc_trade_price_24h"), 0.0)
+        >= minimum
     ]
 
 
 # ==========================================================================
 # 6. 도메인 로직 — 스크리닝 · 점수 · 매매계획
 # ==========================================================================
+
 
 # ------------------------------------------------------------
 # 결과 컨테이너
@@ -1052,9 +1075,9 @@ class Score:
     """FinalScore 100점 구성."""
 
     total: float = 0.0
-    trend_4h: float = 0.0        # 30점
-    entry_1h: float = 0.0        # 40점
-    ma20_position: float = 0.0   # 20점
+    trend_4h: float = 0.0  # 30점
+    entry_1h: float = 0.0  # 40점
+    ma20_position: float = 0.0  # 20점
     market_quality: float = 0.0  # 10점
     penalty: float = 0.0
     penalty_overheat: float = 0.0
@@ -1162,7 +1185,10 @@ def screen_symbol(
         return None
 
     change = rolling_change_24h(df)
-    if np.isnan(change) or not settings.min_change_24h <= change <= settings.max_change_24h:
+    if (
+        np.isnan(change)
+        or not settings.min_change_24h <= change <= settings.max_change_24h
+    ):
         return None
 
     # 현재가는 실시간 티커를 우선 사용하고, 없으면 마지막 완료봉 종가를 쓴다.
@@ -1204,8 +1230,14 @@ def screen_symbol(
 
 def calculate_btc_regime(df: Optional[pd.DataFrame]) -> dict:
     """BTC 4시간봉의 4개 조건으로 시장 국면을 Q1~Q4로 분류한다."""
-    empty = {"label": "확인 불가", "score": np.nan, "change_24h": np.nan,
-             "return_7d": np.nan, "ma120_dist_pct": np.nan, "ma20_slope_24h_pct": np.nan}
+    empty = {
+        "label": "확인 불가",
+        "score": np.nan,
+        "change_24h": np.nan,
+        "return_7d": np.nan,
+        "ma120_dist_pct": np.nan,
+        "ma20_slope_24h_pct": np.nan,
+    }
     if df is None or df.empty:
         return empty
 
@@ -1230,7 +1262,7 @@ def calculate_btc_regime(df: Optional[pd.DataFrame]) -> dict:
     conditions = [
         close > ma120,
         ma20 > ma20_past,
-        change_24h > 0,          # NaN 비교는 False가 되어 안전하다
+        change_24h > 0,  # NaN 비교는 False가 되어 안전하다
         return_7d > 0,
     ]
     score = int(sum(bool(c) for c in conditions))
@@ -1283,14 +1315,20 @@ def analyze_entry(df: Optional[pd.DataFrame], current_price: float) -> EntryTimi
     in_pullback = ENTRY_PULLBACK_MIN_PCT <= distance <= ENTRY_PULLBACK_MAX_PCT
 
     # 4개 조건 각 1점 + 좋은 눌림 위치 2점
-    score = sum([above_ma20, short_ordered, ma5_rising, close_rising]) + (2 if in_pullback else 0)
+    score = sum([above_ma20, short_ordered, ma5_rising, close_rising]) + (
+        2 if in_pullback else 0
+    )
 
     if not above_ma20:
         status = "MA20 하회"
     elif distance > ENTRY_OVERHEAT_PCT:
         status = "과열 주의"
     elif in_pullback:
-        status = "진입 관심" if (short_ordered and ma5_rising and close_rising) else "눌림 확인"
+        status = (
+            "진입 관심"
+            if (short_ordered and ma5_rising and close_rising)
+            else "눌림 확인"
+        )
     else:
         status = "눌림 대기"
 
@@ -1319,7 +1357,10 @@ def calculate_score(candidate: Candidate, settings: Settings) -> Score:
     """100점 만점 점수. 사람이 읽는 판단과 모순되지 않도록 패널티를 둔다."""
     # (1) 4시간 추세 강도 30점: MA별 상승률을 기준치 대비 환산
     trend = sum(
-        10.0 * clamp(safe_float(candidate.ma_slope_pct.get(period), 0.0) / threshold, 0.0, 1.0)
+        10.0
+        * clamp(
+            safe_float(candidate.ma_slope_pct.get(period), 0.0) / threshold, 0.0, 1.0
+        )
         for period, threshold in MA_SLOPE_THRESHOLDS.items()
     )
 
@@ -1335,7 +1376,9 @@ def calculate_score(candidate: Candidate, settings: Settings) -> Score:
     # (4) 과열/유동성 10점
     change = safe_float(candidate.change_24h, 0.0)
     momentum = _momentum_score(change)
-    liquidity = _liquidity_score(candidate.trade_value_24h, settings.min_trade_value_24h)
+    liquidity = _liquidity_score(
+        candidate.trade_value_24h, settings.min_trade_value_24h
+    )
     distance = entry.distance_ma20_pct
 
     # (5) 패널티
@@ -1344,7 +1387,9 @@ def calculate_score(candidate: Candidate, settings: Settings) -> Score:
     surge = 10.0 if change > 12.0 else 0.0
     penalty = overheat + below_ma20 + surge
 
-    total = clamp(trend + entry_score + position + momentum + liquidity - penalty, 0.0, 100.0)
+    total = clamp(
+        trend + entry_score + position + momentum + liquidity - penalty, 0.0, 100.0
+    )
 
     return Score(
         total=round(total, 1),
@@ -1543,14 +1588,17 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
             reasons.append("BTC 대비 상대강도도 약함")
         if downtrend:
             reasons.append("4시간봉이 LH/LL 하락 구조")
-        return result("신규매수 보류", reasons, " → 시장 회복과 구조 반전을 먼저 확인하세요.")
+        return result(
+            "신규매수 보류", reasons, " → 시장 회복과 구조 반전을 먼저 확인하세요."
+        )
 
     if downtrend:
         reasons = ["4시간봉이 LH/LL 하락 구조"]
         if not rs_positive:
             reasons.append("RS vs BTC가 음수")
         return result(
-            "관망 / 반등 확인", reasons,
+            "관망 / 반등 확인",
+            reasons,
             " → 최소한 HL 또는 HH 전환을 확인한 뒤 접근하는 편이 낫습니다.",
         )
 
@@ -1568,7 +1616,8 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
         if rsi_low:
             reasons.append("RSI도 Dynamic Lower 아래")
         return result(
-            "반등 확인 후 접근", reasons,
+            "반등 확인 후 접근",
+            reasons,
             " → 1시간 MA20 회복과 거래량 동반을 확인하는 것이 우선입니다.",
         )
 
@@ -1580,22 +1629,27 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     if strong_market and good_swing and rs_positive and good_entry:
         reasons = [regime, "BTC 대비 상대강도 우위", "HH/HL 상승 구조"]
         reasons.append(
-            "거래량이 EMA20 대비 강함" if volume_strong
-            else "거래량이 평균 이상" if volume_ok
+            "거래량이 EMA20 대비 강함"
+            if volume_strong
+            else "거래량이 평균 이상"
+            if volume_ok
             else "거래량 확인 필요"
         )
         if rsi_high:
             return result(
-                "눌림 후 분할매수 관심", reasons,
+                "눌림 후 분할매수 관심",
+                reasons,
                 " · RSI가 상단에 가까워 즉시 추격보다 눌림 진입이 유리합니다.",
             )
         if rs_strong and volume_ok:
             return result(
-                "분할매수 관심", reasons,
+                "분할매수 관심",
+                reasons,
                 " → 계획 매수구간과 손절선을 지키는 전제에서 우선순위가 높은 후보입니다.",
             )
         return result(
-            "매수 관심", reasons,
+            "매수 관심",
+            reasons,
             " → 진입구간 도달 여부를 확인한 뒤 분할 접근을 고려할 수 있습니다.",
         )
 
@@ -1607,7 +1661,8 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
         if not volume_ok:
             reasons.append("거래량 확증 부족")
         return result(
-            "눌림 대기", reasons,
+            "눌림 대기",
+            reasons,
             " → 가격을 쫓기보다 1시간 MA20 부근의 반등 확인이 좋습니다.",
         )
 
@@ -1622,7 +1677,9 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     if not reasons:
         reasons.append("핵심 조건이 아직 충분히 정렬되지 않음")
     return result(
-        "관망", reasons, " → 추가 확인 전에는 신규 진입 우선순위를 낮게 두는 편이 좋습니다."
+        "관망",
+        reasons,
+        " → 추가 확인 전에는 신규 진입 우선순위를 낮게 두는 편이 좋습니다.",
     )
 
 
@@ -1673,11 +1730,23 @@ def build_result_table(candidates: list[Candidate]) -> pd.DataFrame:
             "entry_price": c.entry.price,
         }
         row.update({f"MA{p}_240m": c.ma_240m.get(p, np.nan) for p in MA_PERIODS})
-        row.update({f"MA{p}_slope_pct_240m": c.ma_slope_pct.get(p, np.nan)
-                    for p in MA_SLOPE_THRESHOLDS})
+        row.update(
+            {
+                f"MA{p}_slope_pct_240m": c.ma_slope_pct.get(p, np.nan)
+                for p in MA_SLOPE_THRESHOLDS
+            }
+        )
         row.update({"MA20_60m": c.entry.ma20, "ATR14_60m": c.entry.atr})
-        row.update({f"score_{k}": v for k, v in asdict(c.score).items() if k != "total"})
-        row.update({k: v for k, v in asdict(c.plan).items() if k not in {"available", "reason"}})
+        row.update(
+            {f"score_{k}": v for k, v in asdict(c.score).items() if k != "total"}
+        )
+        row.update(
+            {
+                k: v
+                for k, v in asdict(c.plan).items()
+                if k not in {"available", "reason"}
+            }
+        )
         rows.append(row)
 
     return (
@@ -1811,7 +1880,12 @@ STOP_COLOR = "#6D4C41"
 TRAIL_COLOR = "#455A64"
 PRICE_COLOR = "#111111"
 MA_COLORS = {5: "#7B1FA2", 20: "#F57C00", 60: "#388E3C", 120: "#1565C0"}
-RSI_COLORS = {"rsi": "#7B1FA2", "upper": "#C62828", "center": "#616161", "lower": "#1565C0"}
+RSI_COLORS = {
+    "rsi": "#7B1FA2",
+    "upper": "#C62828",
+    "center": "#616161",
+    "lower": "#1565C0",
+}
 SWING_UP_COLOR = "#D32F2F"
 SWING_DOWN_COLOR = "#1565C0"
 
@@ -1844,7 +1918,9 @@ def plot_candidate(candidate: Candidate) -> Optional[plt.Figure]:
     if candidate.df_240m is None or not plan.available:
         return None
 
-    completed = ensure_indicators(keep_completed_candles(candidate.df_240m, SCREEN_UNIT))
+    completed = ensure_indicators(
+        keep_completed_candles(candidate.df_240m, SCREEN_UNIT)
+    )
     df = completed.tail(CHART_BARS)
     if len(df) < MIN_CHART_BARS:
         return None
@@ -1871,7 +1947,9 @@ def plot_candidate(candidate: Candidate) -> Optional[plt.Figure]:
 # 내부 구현
 # ------------------------------------------------------------
 def _line(color: str, label: str, *, style: str = "-", width: float = 1.0):
-    return plt.Line2D([0], [0], color=color, linestyle=style, linewidth=width, label=label)
+    return plt.Line2D(
+        [0], [0], color=color, linestyle=style, linewidth=width, label=label
+    )
 
 
 def _draw_panels(df: pd.DataFrame, candidate: Candidate):
@@ -1882,12 +1960,22 @@ def _draw_panels(df: pd.DataFrame, candidate: Candidate):
         for p in MA_PERIODS
         if f"MA{p}" in df.columns
     ]
-    add_plots.append(mpf.make_addplot(df[VOLUME_EMA_COL], panel=1, color="#616161", width=1.1))
+    add_plots.append(
+        mpf.make_addplot(df[VOLUME_EMA_COL], panel=1, color="#616161", width=1.1)
+    )
     add_plots += [
-        mpf.make_addplot(df[RSI_COL], panel=2, color=RSI_COLORS["rsi"], width=1.3, ylabel="RSI"),
-        mpf.make_addplot(df["RSI_Dynamic_Upper"], panel=2, color=RSI_COLORS["upper"], width=0.9),
-        mpf.make_addplot(df["RSI_Dynamic_Center"], panel=2, color=RSI_COLORS["center"], width=0.9),
-        mpf.make_addplot(df["RSI_Dynamic_Lower"], panel=2, color=RSI_COLORS["lower"], width=0.9),
+        mpf.make_addplot(
+            df[RSI_COL], panel=2, color=RSI_COLORS["rsi"], width=1.3, ylabel="RSI"
+        ),
+        mpf.make_addplot(
+            df["RSI_Dynamic_Upper"], panel=2, color=RSI_COLORS["upper"], width=0.9
+        ),
+        mpf.make_addplot(
+            df["RSI_Dynamic_Center"], panel=2, color=RSI_COLORS["center"], width=0.9
+        ),
+        mpf.make_addplot(
+            df["RSI_Dynamic_Lower"], panel=2, color=RSI_COLORS["lower"], width=0.9
+        ),
     ]
 
     levels = [
@@ -1948,16 +2036,28 @@ def _draw_price_legend(ax, candidate: Candidate) -> None:
         (STOP_COLOR, f"손절: {format_price(plan.stop_price)}원", 1.0),
         (SELL_COLORS[0], f"1차 익절 30%: {format_price(plan.take_profit_1)}원", 1.0),
         (SELL_COLORS[1], f"2차 익절 30%: {format_price(plan.take_profit_2)}원", 1.0),
-        (SELL_COLORS[2], f"Runner 강화(4R): {format_price(plan.runner_trigger_4r)}원", 1.0),
-        (TRAIL_COLOR, f"Runner Trail: {format_price(plan.trailing_stop_current)}원", 1.0),
+        (
+            SELL_COLORS[2],
+            f"Runner 강화(4R): {format_price(plan.runner_trigger_4r)}원",
+            1.0,
+        ),
+        (
+            TRAIL_COLOR,
+            f"Runner Trail: {format_price(plan.trailing_stop_current)}원",
+            1.0,
+        ),
         (PRICE_COLOR, f"현재가: {format_price(candidate.price)}원", 1.5),
     ]
-    handles = [_line(color, label, style="--", width=width) for color, label, width in entries]
+    handles = [
+        _line(color, label, style="--", width=width) for color, label, width in entries
+    ]
     handles += [_line(MA_COLORS[p], f"MA{p}", width=1.5) for p in MA_PERIODS]
     ax.legend(handles=handles, loc="upper left", fontsize=7.5, ncol=2)
 
 
-def _draw_swing_labels(ax, df: pd.DataFrame, candidate: Candidate, completed: pd.DataFrame) -> None:
+def _draw_swing_labels(
+    ax, df: pd.DataFrame, candidate: Candidate, completed: pd.DataFrame
+) -> None:
     """좌우 3봉이 확인된 Pivot에만 HH/HL/LH/LL을 표시한다."""
     points = candidate.swing_points
     if points is None or not isinstance(points, pd.DataFrame):
@@ -1983,13 +2083,24 @@ def _draw_swing_labels(ax, df: pd.DataFrame, candidate: Candidate, completed: pd
         color = SWING_UP_COLOR if label in {"HH", "HL"} else SWING_DOWN_COLOR
 
         ax.scatter(
-            position, price + direction * span * 0.018,
-            marker="v" if is_high else "^", s=30, color=color, zorder=6, clip_on=False,
+            position,
+            price + direction * span * 0.018,
+            marker="v" if is_high else "^",
+            s=30,
+            color=color,
+            zorder=6,
+            clip_on=False,
         )
         ax.text(
-            position, price + direction * span * 0.040, label,
-            ha="center", va="bottom" if is_high else "top",
-            fontsize=7.5, fontweight="bold", color=color, clip_on=False,
+            position,
+            price + direction * span * 0.040,
+            label,
+            ha="center",
+            va="bottom" if is_high else "top",
+            fontsize=7.5,
+            fontweight="bold",
+            color=color,
+            clip_on=False,
         )
 
 
@@ -2012,7 +2123,9 @@ def _style_rsi_axis(ax, df: pd.DataFrame) -> None:
 
     # 마지막 완료봉 시각이 항상 눈금에 보이도록 한다.
     count = len(df)
-    positions = sorted(set(np.linspace(0, count - 1, min(7, count), dtype=int).tolist() + [count - 1]))
+    positions = sorted(
+        set(np.linspace(0, count - 1, min(7, count), dtype=int).tolist() + [count - 1])
+    )
     ax.set_xticks(positions)
     ax.set_xticklabels(
         [pd.Timestamp(df.index[p]).strftime("%m/%d %H:%M") for p in positions],
@@ -2072,14 +2185,18 @@ def run_analysis(
             "확보한 뒤 다시 실행하세요."
         )
 
-    targets = filter_by_trade_value(krw_pairs, ticker.tickers, settings.min_trade_value_24h)
+    targets = filter_by_trade_value(
+        krw_pairs, ticker.tickers, settings.min_trade_value_24h
+    )
     result.target_pairs = targets
     if not targets:
         return result
 
     # --- 2) 4시간봉 수집 및 스크리닝 -----------------------------------
     def screen_progress(done: int, total: int, symbol: str) -> None:
-        report(0.05 + 0.60 * done / total, f"1/2 · 4시간봉 수집 {done}/{total} · {symbol}")
+        report(
+            0.05 + 0.60 * done / total, f"1/2 · 4시간봉 수집 {done}/{total} · {symbol}"
+        )
 
     candles_240m, errors = fetch_ohlcv_many(
         client, targets, SCREEN_UNIT, settings, offline, screen_progress
@@ -2132,7 +2249,10 @@ def run_analysis(
 
     # --- 3) 1시간봉 진입 타이밍 ----------------------------------------
     def entry_progress(done: int, total: int, symbol: str) -> None:
-        report(0.70 + 0.25 * done / total, f"2/2 · 1시간봉 진입 확인 {done}/{total} · {symbol}")
+        report(
+            0.70 + 0.25 * done / total,
+            f"2/2 · 1시간봉 진입 확인 {done}/{total} · {symbol}",
+        )
 
     symbols = [c.symbol for c in candidates]
     candles_60m, entry_errors = fetch_ohlcv_many(
@@ -2207,9 +2327,19 @@ def cache_summary() -> dict[str, int]:
 DEFAULTS = Settings()
 
 PRICE_COLUMNS = [
-    "현재가", "손절", "1차익절(30%)", "2차익절(30%)", "Runner강화(4R)",
-    "매수구간 하단", "매수구간 상단", "1차 익절(30%)", "2차 익절(30%)",
-    "4R Runner 강화", "현재 Trail", "권장 매수금", "예상 최대손실",
+    "현재가",
+    "손절",
+    "1차익절(30%)",
+    "2차익절(30%)",
+    "Runner강화(4R)",
+    "매수구간 하단",
+    "매수구간 상단",
+    "1차 익절(30%)",
+    "2차 익절(30%)",
+    "4R Runner 강화",
+    "현재 Trail",
+    "권장 매수금",
+    "예상 최대손실",
 ]
 
 CSS = """
@@ -2252,10 +2382,18 @@ section[data-testid="stSidebar"] div[data-testid="stButton"] button {
 def read_settings() -> tuple[Settings, bool]:
     """사이드바 입력을 Settings로 변환한다. 반환: (settings, 실행 클릭 여부)"""
     with st.sidebar:
-        st.markdown('<div class="sidebar-section-title">⚙ 분석 설정 · v17</div>', unsafe_allow_html=True)
-        cache_minutes = st.slider("캐시 만료(분)", 10, 180, DEFAULTS.ticker_max_age_min, 5)
+        st.markdown(
+            '<div class="sidebar-section-title">⚙ 분석 설정 · v17</div>',
+            unsafe_allow_html=True,
+        )
+        cache_minutes = st.slider(
+            "캐시 만료(분)", 10, 180, DEFAULTS.ticker_max_age_min, 5
+        )
 
-        st.markdown('<div class="sidebar-section-title">💰 포지션 리스크</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="sidebar-section-title">💰 포지션 리스크</div>',
+            unsafe_allow_html=True,
+        )
         capital = _number_input("계좌 자금(원)", f"{DEFAULTS.account_capital:,.0f}")
         col1, col2 = st.columns(2)
         with col1:
@@ -2263,12 +2401,23 @@ def read_settings() -> tuple[Settings, bool]:
         with col2:
             weight = _number_input("비중(%)", f"{DEFAULTS.max_position_pct:.2f}")
 
-        st.markdown('<div class="sidebar-section-title">🔍 필터링 조건</div>', unsafe_allow_html=True)
-        min_change = st.slider("최소 변동률(%)", -10.0, 20.0, DEFAULTS.min_change_24h, 0.5)
-        max_change = st.slider("최대 변동률(%)", 5.0, 50.0, DEFAULTS.max_change_24h, 0.5)
-        min_value = _number_input("최소 거래대금(원)", f"{DEFAULTS.min_trade_value_24h:,.0f}")
+        st.markdown(
+            '<div class="sidebar-section-title">🔍 필터링 조건</div>',
+            unsafe_allow_html=True,
+        )
+        min_change = st.slider(
+            "최소 변동률(%)", -10.0, 20.0, DEFAULTS.min_change_24h, 0.5
+        )
+        max_change = st.slider(
+            "최대 변동률(%)", 5.0, 50.0, DEFAULTS.max_change_24h, 0.5
+        )
+        min_value = _number_input(
+            "최소 거래대금(원)", f"{DEFAULTS.min_trade_value_24h:,.0f}"
+        )
 
-        st.markdown('<div class="sidebar-section-title">📋 출력</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="sidebar-section-title">📋 출력</div>', unsafe_allow_html=True
+        )
         col3, col4, col5 = st.columns(3)
         with col3:
             top_n = _number_input("TOP", str(DEFAULTS.top_n))
@@ -2309,10 +2458,13 @@ def _number_input(label: str, default: str) -> float:
 # 화면 구성
 # ------------------------------------------------------------
 def render_header(settings: Settings) -> None:
-    st.markdown('<div class="main-app-title">📊 업비트 코인 분석기</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="main-app-title">📊 업비트 코인 분석기</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         '<div class="main-app-subtitle">4시간봉 추세 선별 → 1시간봉 진입 확인 '
-        '→ FinalScore → MA/ATR 매매 계획</div>',
+        "→ FinalScore → MA/ATR 매매 계획</div>",
         unsafe_allow_html=True,
     )
     st.caption(
@@ -2328,7 +2480,7 @@ def render_header(settings: Settings) -> None:
 def render_intro() -> None:
     st.markdown(
         '<div class="info-banner">👉 좌측 사이드바에서 설정을 조정하고 '
-        '분석 실행 버튼을 클릭하세요.</div>',
+        "분석 실행 버튼을 클릭하세요.</div>",
         unsafe_allow_html=True,
     )
     st.subheader("기본 선별 구조")
@@ -2347,7 +2499,9 @@ def render_intro() -> None:
 
 def render_metrics(result: AnalysisResult) -> None:
     ticker = result.ticker
-    age_text = "실시간 API" if ticker.source == "api" else f"캐시 {ticker.age_minutes:.0f}분"
+    age_text = (
+        "실시간 API" if ticker.source == "api" else f"캐시 {ticker.age_minutes:.0f}분"
+    )
 
     columns = st.columns(5)
     for column, (label, value) in zip(
@@ -2447,13 +2601,13 @@ def render_charts(candidates: list[Candidate], default_count: int) -> None:
         candidate = labels[label]
         st.markdown(
             f'<div class="chart-title">{candidate.korean_name} '
-            f'({candidate.symbol}) - 4시간봉</div>',
+            f"({candidate.symbol}) - 4시간봉</div>",
             unsafe_allow_html=True,
         )
         st.markdown(_chart_meta_html(candidate), unsafe_allow_html=True)
         st.markdown(
             f'<div class="chart-verdict"><b>최종 판단: {candidate.action}</b><br>'
-            f'{candidate.advice}</div>',
+            f"{candidate.advice}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2473,7 +2627,9 @@ def render_charts(candidates: list[Candidate], default_count: int) -> None:
 def _chart_meta_html(candidate: Candidate) -> str:
     last = candidate.last_completed_240m
     last_text = (
-        pd.Timestamp(last).strftime("%Y-%m-%d %H:%M KST") if pd.notna(last) else "확인 불가"
+        pd.Timestamp(last).strftime("%Y-%m-%d %H:%M KST")
+        if pd.notna(last)
+        else "확인 불가"
     )
     return (
         '<div class="chart-meta">'
@@ -2593,7 +2749,9 @@ def main() -> None:
 
         try:
             st.session_state["analysis"] = run_analysis(settings, report)
-            st.session_state["analysis_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state["analysis_time"] = datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
         except Exception as exc:
             progress.empty()
             status.empty()
