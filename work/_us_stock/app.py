@@ -4,9 +4,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from threading import RLock
+import gc
 import logging
 import platform
 import time
+
+# macOS/Linux 열린 파일 수 제한 완화
+def raise_open_file_limit(target: int = 8192) -> int | None:
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        new_soft = min(max(soft, target), hard)
+        if new_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+        return int(new_soft)
+    except Exception:
+        return None
+
+OPEN_FILE_LIMIT = raise_open_file_limit()
 
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
@@ -267,7 +282,9 @@ def find_pending_targets(
         if last_date is None:
             item_start = start_date
         else:
-            item_start_ts = pd.Timestamp(last_date) - pd.Timedelta(days=refresh_days)
+            # 자동 갱신은 마지막 저장일에서 3일만 겹쳐 다시 받는다.
+            # 주말/휴장 및 수정 데이터를 안전하게 포함하면서 과도한 재다운로드를 막는다.
+            item_start_ts = pd.Timestamp(last_date) - pd.Timedelta(days=3)
             item_start_ts = max(item_start_ts, pd.Timestamp(start_date))
             item_start = item_start_ts.date().isoformat()
 
@@ -321,7 +338,7 @@ def update_price_data(
     pending: list[dict],
     download_end: str,
     batch_size: int,
-    sleep_seconds: float = 1.0,
+    sleep_seconds: float = 2.0,
 ) -> list[str]:
     """다운로드 대상 종목을 갱신하고 실패 티커 목록을 반환한다."""
     if not pending:
@@ -356,7 +373,7 @@ def update_price_data(
                     actions=False,
                     group_by="ticker",
                     progress=False,
-                    threads=True,
+                    threads=False,
                     multi_level_index=True,
                 )
             except Exception:
@@ -398,6 +415,8 @@ def update_price_data(
                 min(completed / total, 1.0),
                 text=f"데이터 갱신 중... {completed}/{total}",
             )
+            del data
+            gc.collect()
             time.sleep(sleep_seconds)
 
     progress.progress(1.0, text=f"데이터 갱신 완료: {total}/{total}")
@@ -946,8 +965,9 @@ def make_candle_chart(
 
 def display_dataframe(df: pd.DataFrame, *, height: int | None = None) -> None:
     kwargs = {
-        "use_container_width": True,
+        "width": "stretch",
         "hide_index": True,
+        "lazy": False,
     }
     if height is not None:
         kwargs["height"] = height
@@ -980,19 +1000,15 @@ with st.sidebar:
 
     with st.expander("자동 데이터 갱신 설정", expanded=False):
         start_date = st.text_input("최초 다운로드 시작일", "2015-01-01")
-        refresh_days = st.number_input(
-            "기존 데이터 재다운로드 기간(일)",
-            min_value=30,
-            max_value=1000,
-            value=400,
-            step=10,
-        )
+        # 자동 갱신은 마지막 저장일 기준 최근 3일만 겹쳐 다운로드합니다.
+        refresh_days = 3
+        st.caption("기존 데이터는 마지막 저장일 기준 최근 3일만 겹쳐 자동 갱신합니다.")
         batch_size = st.number_input(
             "다운로드 배치 크기",
-            min_value=10,
-            max_value=200,
-            value=100,
-            step=10,
+            min_value=5,
+            max_value=100,
+            value=20,
+            step=5,
         )
         st.caption(
             "앱 세션 시작 시 최신 거래일을 한 번 확인합니다. "
@@ -1047,6 +1063,8 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"OS: {platform.system()} | matplotlib font: {KOREAN_FONT}")
+    if OPEN_FILE_LIMIT is not None:
+        st.caption(f"열린 파일 제한(soft): {OPEN_FILE_LIMIT:,}")
     st.caption(f"데이터 폴더: {BASE_DIR.resolve()}")
 
 
@@ -1157,6 +1175,26 @@ if auto_info.get("mode") == "online":
         problem = summary[summary["Status"] != "OK"]
         if not problem.empty:
             with st.expander(f"갱신되지 않은/문제가 있는 종목 ({len(problem)}개)"):
+                st.markdown("##### 상태별 개수")
+                status_count = (
+                    problem["Status"]
+                    .value_counts(dropna=False)
+                    .rename_axis("Status")
+                    .reset_index(name="Count")
+                )
+                display_dataframe(status_count)
+
+                st.markdown("##### 마지막 저장 날짜")
+                last_date_count = (
+                    problem["LastDate"]
+                    .value_counts(dropna=False)
+                    .rename_axis("LastDate")
+                    .reset_index(name="Count")
+                    .head(20)
+                )
+                display_dataframe(last_date_count)
+
+                st.markdown("##### 문제 종목 상세")
                 display_dataframe(problem.head(100))
 else:
     st.warning(
@@ -1401,6 +1439,7 @@ else:
         show_card(c7, "현재 단계", str(row["CurrentStage"]))
         show_card(c8, "매도 신호", str(row["SellSignal"]))
 
+        fig = None
         try:
             fig = make_candle_chart(
                 ticker,
@@ -1409,9 +1448,11 @@ else:
                 chart_days=int(chart_days),
             )
             st.pyplot(fig, width="stretch")
-            plt.close(fig)
         except Exception as exc:
             st.warning(f"{ticker} 차트 생성 실패: {exc}")
+        finally:
+            if fig is not None:
+                plt.close(fig)
 
         st.divider()
 
