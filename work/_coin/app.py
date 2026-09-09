@@ -35,6 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -1892,16 +1893,67 @@ MIN_CHART_BARS = 5
 
 
 def configure_korean_font() -> str:
-    """운영체제에 맞는 한글 폰트를 선택한다."""
-    installed = {font.name for font in fm.fontManager.ttflist}
-    candidates = {
-        "Windows": ["Malgun Gothic", "NanumGothic"],
-        "Darwin": ["AppleGothic", "Arial Unicode MS", "NanumGothic"],
-    }.get(platform.system(), ["NanumGothic", "Noto Sans CJK KR", "DejaVu Sans"])
+    """로컬/Streamlit Cloud에서 한글 폰트를 안전하게 등록한다.
 
-    selected = next((name for name in candidates if name in installed), "DejaVu Sans")
+    koreanize-matplotlib 패키지는 직접 import하지 않는다.
+    Python 3.13+에서 패키지 내부의 distutils import 오류를 피하면서
+    패키지에 포함된 NanumGothic.ttf 파일만 직접 등록한다.
+    """
+
+    system = platform.system()
+
+    # 1) 로컬 OS 기본 한글 폰트 우선
+    preferred = {
+        "Windows": "Malgun Gothic",
+        "Darwin": "AppleGothic",
+    }.get(system)
+
+    available = {font.name for font in fm.fontManager.ttflist}
+    if preferred and preferred in available:
+        selected = preferred
+    else:
+        selected = None
+
+    # 2) Streamlit Cloud(Linux): koreanize-matplotlib을 import하지 않고
+    #    패키지 안의 NanumGothic.ttf만 직접 Matplotlib에 등록
+    if selected is None:
+        try:
+            dist = distribution("koreanize-matplotlib")
+            font_path = Path(
+                dist.locate_file("koreanize_matplotlib/fonts/NanumGothic.ttf")
+            )
+
+            if font_path.exists():
+                fm.fontManager.addfont(str(font_path))
+                selected = fm.FontProperties(fname=str(font_path)).get_name()
+                log.info("NanumGothic 직접 등록: %s", font_path)
+
+        except PackageNotFoundError:
+            log.warning(
+                "koreanize-matplotlib 패키지가 없습니다. "
+                "requirements.txt에 koreanize-matplotlib을 추가하세요."
+            )
+        except Exception as exc:
+            log.warning("NanumGothic 직접 등록 실패: %s", exc)
+
+    # 3) 이미 시스템에 설치된 한글 폰트가 있으면 사용
+    if selected is None:
+        available = {font.name for font in fm.fontManager.ttflist}
+        for name in ("NanumGothic", "NanumBarunGothic", "Noto Sans CJK KR"):
+            if name in available:
+                selected = name
+                break
+
+    # 마지막 대체 폰트. 여기까지 오면 한글은 깨질 수 있으므로 로그에 표시
+    if selected is None:
+        selected = "DejaVu Sans"
+        log.warning("한글 폰트를 찾지 못해 DejaVu Sans를 사용합니다.")
+
     plt.rcParams["font.family"] = selected
+    plt.rcParams["font.sans-serif"] = [selected]
     plt.rcParams["axes.unicode_minus"] = False
+
+    log.info("Matplotlib 한글 폰트: %s", selected)
     return selected
 
 
