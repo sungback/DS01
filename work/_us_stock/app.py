@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from importlib.metadata import PackageNotFoundError, distribution
 from zoneinfo import ZoneInfo
 from threading import RLock
 import gc
@@ -32,9 +33,9 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
 
-# Streamlit Cloud에서도 apt(packages.txt) 없이 한글 폰트를 사용한다.
-# work/_us_stock/requirements.txt에 koreanize-matplotlib==0.1.1 필요
-import koreanize_matplotlib  # noqa: F401
+# koreanize-matplotlib은 직접 import하지 않는다.
+# Python 3.14에서는 이 패키지 내부의 distutils import가 실패할 수 있으므로
+# 아래에서 패키지에 포함된 NanumGothic.ttf 파일만 직접 등록한다.
 
 import mplfinance as mpf
 import numpy as np
@@ -120,11 +121,44 @@ PLOT_LOCK = RLock()
 # ============================================================
 # 한글 폰트
 # ============================================================
-# koreanize-matplotlib이 패키지에 포함된 NanumGothic을 등록하므로
-# Streamlit Cloud의 fonts-nanum(apt) 설치가 필요하지 않다.
-KOREAN_FONT = "NanumGothic"
+def get_korean_font() -> str:
+    """로컬/Streamlit Cloud 모두에서 사용할 한글 폰트를 등록한다."""
 
-# Matplotlib 전체 그래프에 적용
+    # 1) 로컬 OS에 기본 한글 폰트가 있으면 우선 사용
+    preferred = {
+        "Windows": "Malgun Gothic",
+        "Darwin": "AppleGothic",
+    }.get(platform.system())
+
+    available_fonts = {f.name for f in fm.fontManager.ttflist}
+    if preferred and preferred in available_fonts:
+        return preferred
+
+    # 2) Streamlit Cloud: koreanize-matplotlib 패키지 안의
+    #    NanumGothic.ttf만 직접 등록한다.
+    #    패키지 자체를 import하지 않으므로 Python 3.14의 distutils 오류를 피한다.
+    try:
+        dist = distribution("koreanize-matplotlib")
+        font_path = Path(dist.locate_file("koreanize_matplotlib/fonts/NanumGothic.ttf"))
+        if font_path.exists():
+            fm.fontManager.addfont(str(font_path))
+            return fm.FontProperties(fname=str(font_path)).get_name()
+    except PackageNotFoundError:
+        pass
+    except Exception as exc:
+        logging.warning("NanumGothic 등록 실패: %s", exc)
+
+    # 3) 시스템에 NanumGothic이 이미 설치되어 있으면 사용
+    available_fonts = {f.name for f in fm.fontManager.ttflist}
+    if "NanumGothic" in available_fonts:
+        return "NanumGothic"
+
+    # 마지막 대체 폰트. 한글이 깨질 수 있으므로 사이드바에 실제 폰트명을 표시한다.
+    return "DejaVu Sans"
+
+
+KOREAN_FONT = get_korean_font()
+
 plt.rcParams["font.family"] = KOREAN_FONT
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["font.weight"] = "normal"
