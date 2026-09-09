@@ -46,7 +46,6 @@ import pandas as pd
 import requests
 import streamlit as st
 from matplotlib.ticker import FuncFormatter
-import koreanize_matplotlib
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("upbit_analyzer")
