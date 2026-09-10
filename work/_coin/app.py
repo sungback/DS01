@@ -1920,7 +1920,7 @@ def configure_korean_font() -> str:
         try:
             dist = distribution("koreanize-matplotlib")
             font_path = Path(
-                dist.locate_file("koreanize_matplotlib/fonts/NanumGothic.ttf")
+                str(dist.locate_file("koreanize_matplotlib/fonts/NanumGothic.ttf"))
             )
 
             if font_path.exists():
@@ -1965,7 +1965,6 @@ def plot_candidate(candidate: Candidate) -> Optional[plt.Figure]:
 
     데이터가 부족하면 None을 반환한다(호출부에서 조용히 건너뛴다).
     """
-    plan = candidate.plan
     if candidate.df_240m is None:
         return None
 
@@ -2230,6 +2229,15 @@ class AnalysisResult:
     errors: list[tuple[str, str]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AnalysisCacheEntry:
+    """Streamlit 세션 간에 공유하는 분석 결과와 생성 시각."""
+
+    result: AnalysisResult
+    created_at: float
+    created_monotonic: float
+
+
 def run_analysis(
     settings: Settings,
     on_progress: Optional[ProgressFn] = None,
@@ -2360,6 +2368,62 @@ def run_analysis(
 
     report(1.0, "분석이 완료되었습니다.")
     return result
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _run_analysis_cached(settings: Settings) -> AnalysisCacheEntry:
+    """전체 분석 결과를 Streamlit 프로세스 전체에서 공유한다.
+
+    진행률 위젯도 캐시 함수 안에서 생성해, 새 브라우저 세션에서
+    캐시된 UI 메시지를 재생할 때 외부 DeltaGenerator를 참조하지 않는다.
+    """
+    progress = st.progress(0.0)
+    status = st.empty()
+
+    def report(ratio: float, message: str) -> None:
+        progress.progress(min(1.0, max(0.0, ratio)))
+        status.info(message)
+
+    try:
+        result = run_analysis(settings, report)
+        return AnalysisCacheEntry(
+            result=result,
+            created_at=time.time(),
+            created_monotonic=time.monotonic(),
+        )
+    finally:
+        progress.empty()
+        status.empty()
+
+
+def load_analysis_cached(
+    settings: Settings,
+    *,
+    force_refresh: bool = False,
+) -> tuple[AnalysisResult, datetime, bool]:
+    """캐시 수명을 적용해 분석을 로드한다.
+
+    전체 결과에 실시간 티커 스냅샷이 포함되므로 사용자가 선택한
+    ``ticker_max_age_min``을 전체 분석 캐시의 최대 수명으로도 사용한다.
+    반환값의 bool은 이번 호출에서 기존 캐시를 재사용했는지를 나타낸다.
+    """
+    if force_refresh:
+        _run_analysis_cached.clear(settings)
+
+    requested_at = time.monotonic()
+    entry = _run_analysis_cached(settings)
+    max_age_seconds = settings.ticker_max_age_min * 60
+
+    # cache_data의 TTL은 데코레이터에서 고정되므로, 사이드바에서
+    # 선택한 동적 TTL은 생성 시각을 기준으로 직접 검사한다.
+    if time.monotonic() - entry.created_monotonic >= max_age_seconds:
+        _run_analysis_cached.clear(settings)
+        requested_at = time.monotonic()
+        entry = _run_analysis_cached(settings)
+
+    created_at = datetime.fromtimestamp(entry.created_at)
+    cache_hit = entry.created_monotonic < requested_at
+    return entry.result, created_at, cache_hit
 
 
 # ------------------------------------------------------------
@@ -2720,9 +2784,14 @@ def render_intro() -> None:
 
 def render_metrics(result: AnalysisResult) -> None:
     ticker = result.ticker
-    age_text = (
-        "실시간 API" if ticker.source == "api" else f"캐시 {ticker.age_minutes:.0f}분"
-    )
+    if ticker is None:
+        age_text = "없음"
+    else:
+        age_text = (
+            "실시간 API"
+            if ticker.source == "api"
+            else f"캐시 {ticker.age_minutes:.0f}분"
+        )
 
     columns = st.columns(5)
     for column, (label, value) in zip(
@@ -2739,6 +2808,8 @@ def render_metrics(result: AnalysisResult) -> None:
 
     if result.offline:
         st.warning("업비트 API 연결 실패로 캐시 우선/오프라인 모드가 사용되었습니다.")
+    elif ticker is None:
+        st.warning("티커 스냅샷 정보가 없습니다.")
     elif ticker.warning:
         st.warning(
             f"현재 ticker는 약 {ticker.age_minutes:.0f}분 전 캐시입니다. "
@@ -3118,7 +3189,14 @@ def render_results(result: AnalysisResult) -> None:
         return
 
     render_metrics(result)
-    st.caption(f"분석 시각: {st.session_state.get('analysis_time', '-')}")
+    cache_label = (
+        " · Streamlit 캐시 재사용"
+        if st.session_state.get("analysis_cache_hit", False)
+        else ""
+    )
+    st.caption(
+        f"분석 시각: {st.session_state.get('analysis_time', '-')}{cache_label}"
+    )
 
     # --------------------------------------------------------
     # 최종 판단 필터
@@ -3298,40 +3376,35 @@ def main() -> None:
     should_run = run_clicked or existing_result is None
 
     if should_run:
-        progress = st.progress(0.0)
-        status = st.empty()
-
-        def report(ratio: float, message: str) -> None:
-            progress.progress(min(1.0, max(0.0, ratio)))
-            status.info(message)
-
         try:
-            st.session_state["analysis"] = run_analysis(settings, report)
-            st.session_state["analysis_time"] = datetime.now().strftime(
+            loaded_result, created_at, cache_hit = load_analysis_cached(
+                settings,
+                force_refresh=run_clicked,
+            )
+            st.session_state["analysis"] = loaded_result
+            st.session_state["analysis_time"] = created_at.strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
+            st.session_state["analysis_cache_hit"] = cache_hit
         except Exception as exc:
             st.error(f"분석에 실패했습니다: {exc}")
             return
-        finally:
-            progress.empty()
-            status.empty()
 
-    result: AnalysisResult | None = st.session_state.get("analysis")
-    if result is None:
+    session_result: AnalysisResult | None = st.session_state.get("analysis")
+    if session_result is None:
         st.warning(
             "자동 분석 결과가 없습니다. 잠시 후 다시 실행하거나 '다시 분석'을 눌러주세요."
         )
         return
 
     # 저장된 결과는 실행 당시 설정을 그대로 쓰되, 출력 개수만 현재 값을 반영한다.
-    result.settings = replace(
-        result.settings,
+    session_result.settings = replace(
+        session_result.settings,
         top_n=settings.top_n,
         strategy_n=settings.strategy_n,
         chart_n=settings.chart_n,
     )
-    render_results(result)
+    render_results(session_result)
 
 
 if __name__ == "__main__":
