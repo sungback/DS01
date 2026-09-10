@@ -346,6 +346,9 @@ class ScreenParams:
     score_dollar_full: float
     # 강한추세 판정 기준(절대 모멘텀)
     strong_momentum_min: float
+    strong_max_ma20_dist: float
+    low_heat_ma20_dist: float
+    low_heat_return20: float
 
 
 @dataclass(frozen=True)
@@ -359,6 +362,7 @@ class SidebarConfig:
     top_n: int
     chart_n: int
     chart_days: int
+    save_output: bool
     screen: ScreenParams
     buy_price: dict[str, float]
     buy_stop: dict[str, float]
@@ -694,6 +698,18 @@ def get_local_latest_market_date() -> pd.Timestamp | None:
         return None
 
 
+def save_output_csv(candidates: pd.DataFrame) -> None:
+    """분석 결과를 원자적으로 저장한다.
+
+    이 파일은 앱이 다시 읽지 않는 순수 산출물이고, 화면의 다운로드 버튼도
+    메모리 데이터를 쓴다. 여러 세션이 같은 경로에 쓰면 마지막 실행 결과만
+    남으므로, 임시 파일에 먼저 쓰고 교체해 반쯤 쓰인 파일이 남지 않게 한다.
+    """
+    temp_file = OUTPUT_FILE.with_name(OUTPUT_FILE.name + ".tmp")
+    candidates.to_csv(temp_file, index=False)
+    temp_file.replace(OUTPUT_FILE)
+
+
 def check_required_files() -> list[str]:
     required_files = [
         SP500_FILE,
@@ -969,10 +985,10 @@ def _classify_types(candidates: pd.DataFrame, params: ScreenParams) -> None:
     )
     overheated = candidates["MA20Dist"] > params.overheat_ma20_dist
     strong = (candidates["Momentum6_1M"] >= params.strong_momentum_min) & (
-        candidates["MA20Dist"] <= STRONG_MAX_MA20_DIST
+        candidates["MA20Dist"] <= params.strong_max_ma20_dist
     )
-    low_heat = (candidates["MA20Dist"] < LOW_HEAT_MA20_DIST) & (
-        candidates["Return20"] < LOW_HEAT_RETURN20
+    low_heat = (candidates["MA20Dist"] < params.low_heat_ma20_dist) & (
+        candidates["Return20"] < params.low_heat_return20
     )
 
     candidates["Type"] = np.select(
@@ -1306,6 +1322,9 @@ def build_holdings_status(
         return pd.DataFrame(), missing
 
     held = pd.DataFrame(rows)
+    # 본 분석은 최신일이 어긋난 종목을 "최신일불일치"로 제외하지만, 보유 종목은
+    # 제외할 수 없다. 대신 오래된 가격으로 낸 신호임을 반드시 드러낸다.
+    held["IsStale"] = held["Date"].dt.normalize() != pd.Timestamp(spy_date).normalize()
     held["ExplicitStop"] = pd.to_numeric(held["ExplicitStop"], errors="coerce")
     initial_stop = initial_risk_stop(
         held["EntryPrice"], held["ExplicitStop"], params.max_stop_loss
@@ -1475,30 +1494,49 @@ def init_session_state() -> None:
             st.session_state[key] = default
 
 
-def _parse_holdings(edited: pd.DataFrame) -> tuple[dict[str, float], dict[str, float]]:
-    """보유 종목 편집기의 내용을 매수가/손절가 딕셔너리로 변환한다."""
+def _parse_holdings(
+    edited: pd.DataFrame,
+) -> tuple[dict[str, float], dict[str, float], list[str]]:
+    """보유 종목 편집기의 내용을 매수가/손절가 딕셔너리로 변환한다.
+
+    무시한 입력은 조용히 버리지 않고 사유를 함께 돌려준다. 티커만 적고
+    매수가를 빠뜨린 사용자가 자기 종목이 왜 안 보이는지 알 수 있어야 한다.
+
+    반환: (매수가, 손절가, 무시한 입력 사유 목록)
+    """
     buy_price: dict[str, float] = {}
     buy_stop: dict[str, float] = {}
+    issues: list[str] = []
 
     for _, row in edited.iterrows():
         raw = row.get("티커")
-        if raw is None or pd.isna(raw):
-            continue
+        ticker = "" if raw is None or pd.isna(raw) else str(raw).strip().upper()
         # 저장된 CSV는 Yahoo 표기(BRK-B)를 쓰므로 입력도 맞춰 정규화한다.
-        ticker = str(raw).strip().upper().replace(".", "-")
-        if not ticker:
-            continue
+        ticker = ticker.replace(".", "-")
 
         price = row.get("매수가")
-        if pd.isna(price) or float(price) <= 0:
+        has_price = pd.notna(price) and float(price) > 0
+
+        if not ticker:
+            if has_price:
+                issues.append("티커 없이 가격만 있는 행을 건너뛰었습니다.")
             continue
+
+        if not has_price:
+            issues.append(f"{ticker}: 매수가가 없어 판정에서 제외했습니다.")
+            continue
+
+        if ticker in buy_price:
+            issues.append(f"{ticker}: 중복 입력이라 마지막 행의 값을 사용합니다.")
         buy_price[ticker] = float(price)
 
         stop = row.get("손절가")
         if pd.notna(stop) and float(stop) > 0:
             buy_stop[ticker] = float(stop)
+        else:
+            buy_stop.pop(ticker, None)
 
-    return buy_price, buy_stop
+    return buy_price, buy_stop, issues
 
 
 def render_holdings_editor() -> tuple[dict[str, float], dict[str, float]]:
@@ -1542,7 +1580,11 @@ def render_holdings_editor() -> tuple[dict[str, float], dict[str, float]]:
         "매수가를 입력한 종목만 '현재 단계'와 '매도 신호'를 판정합니다. "
         "빈 행은 무시됩니다."
     )
-    return _parse_holdings(edited)
+
+    buy_price, buy_stop, issues = _parse_holdings(edited)
+    if issues:
+        st.warning("\n".join(f"- {item}" for item in dict.fromkeys(issues)))
+    return buy_price, buy_stop
 
 
 def render_sidebar() -> SidebarConfig:
@@ -1637,6 +1679,57 @@ def render_sidebar() -> SidebarConfig:
                 help="백분위가 아닌 절대 기준이라 후보 수가 달라져도 "
                 "같은 종목은 같은 등급을 받습니다.",
             )
+
+            strong_max_ma20_dist_pct = st.number_input(
+                "강한추세: MA20 이격 이하(%)",
+                1.0,
+                50.0,
+                STRONG_MAX_MA20_DIST * 100,
+                0.5,
+                help="모멘텀이 강해도 이 값을 넘어서면 강한추세로 보지 않습니다.",
+            )
+            low_heat_ma20_dist_pct = st.number_input(
+                "저과열: MA20 이격 미만(%)",
+                0.1,
+                30.0,
+                LOW_HEAT_MA20_DIST * 100,
+                0.5,
+            )
+            low_heat_return20_pct = st.number_input(
+                "저과열: 20일 수익률 미만(%)",
+                0.1,
+                50.0,
+                LOW_HEAT_RETURN20 * 100,
+                1.0,
+            )
+
+            # 기본 필터가 분류보다 먼저 적용되므로, 필터가 분류 기준보다
+            # 조이면 해당 유형은 아예 나올 수 없다.
+            # 과열주의: MA20Dist > 기준 이어야 하는데 필터는 <= 상한 을 요구한다.
+            # 급등주의: 두 조건의 OR이므로 둘 다 막혀야 도달 불가다.
+            unreachable: list[str] = []
+            if max_ma20_dist_pct <= overheat_ma20_dist_pct:
+                unreachable.append(
+                    f"과열주의 — 기본 필터의 MA20 이격 상한"
+                    f"({max_ma20_dist_pct:.1f}%)이 과열주의 기준"
+                    f"({overheat_ma20_dist_pct:.1f}%) 이하입니다."
+                )
+            if (
+                max_ret20_pct <= surge_return20_pct
+                and max_day_gain5_pct <= surge_day_gain5_pct
+            ):
+                unreachable.append(
+                    f"급등주의 — 기본 필터의 20일 수익률 상한"
+                    f"({max_ret20_pct:.1f}%)과 5일 최대 상승률 상한"
+                    f"({max_day_gain5_pct:.1f}%)이 각각 급등주의 기준"
+                    f"({surge_return20_pct:.1f}%, {surge_day_gain5_pct:.1f}%) "
+                    "이하입니다."
+                )
+            if unreachable:
+                st.warning(
+                    "기본 필터가 먼저 적용되어 아래 유형은 종목이 나올 수 "
+                    "없습니다:\n" + "\n".join(f"- {item}" for item in unreachable)
+                )
 
         with st.expander("균형형 분류 기준", expanded=False):
             bal_momentum_min_pct = st.number_input(
@@ -1766,6 +1859,14 @@ def render_sidebar() -> SidebarConfig:
                 DEFAULT_CHART_DAYS,
                 10,
             )
+            save_output = st.checkbox(
+                "분석 결과를 파일로 저장",
+                value=True,
+                help=f"{OUTPUT_FILE.name}에 매 실행마다 덮어씁니다. "
+                "여러 사람이 함께 쓰는 배포 환경에서는 서로의 결과를 지우므로 "
+                "끄는 편이 좋습니다. 꺼도 화면의 다운로드 버튼은 그대로 "
+                "동작합니다.",
+            )
 
         if st.button("분석 캐시 새로고침", width="stretch"):
             st.cache_data.clear()
@@ -1798,6 +1899,9 @@ def render_sidebar() -> SidebarConfig:
         score_dollar_min=score_dollar_min_m * 1_000_000,
         score_dollar_full=score_dollar_full_m * 1_000_000,
         strong_momentum_min=strong_momentum_min_pct / 100,
+        strong_max_ma20_dist=strong_max_ma20_dist_pct / 100,
+        low_heat_ma20_dist=low_heat_ma20_dist_pct / 100,
+        low_heat_return20=low_heat_return20_pct / 100,
     )
     return SidebarConfig(
         start_date=start_date,
@@ -1807,6 +1911,7 @@ def render_sidebar() -> SidebarConfig:
         top_n=int(top_n),
         chart_n=int(chart_n),
         chart_days=int(chart_days),
+        save_output=bool(save_output),
         screen=screen,
         buy_price=buy_price,
         buy_stop=buy_stop,
@@ -1997,8 +2102,8 @@ def run_analysis(cfg: SidebarConfig):
                 buy_stop=cfg.buy_stop,
             )
 
-            if not candidates.empty:
-                candidates.to_csv(OUTPUT_FILE, index=False)
+            if not candidates.empty and cfg.save_output:
+                save_output_csv(candidates)
 
     except Exception as exc:
         st.exception(exc)
@@ -2072,6 +2177,7 @@ def render_market_state(
 # ============================================================
 HOLDINGS_COLS = {
     "Ticker": "티커",
+    "Date": "기준일",
     "Close": "현재가",
     "EntryPrice": "매수가",
     "Return_%": "수익률(%)",
@@ -2101,6 +2207,17 @@ def render_holdings_status(held: pd.DataFrame, missing: list[str]) -> None:
         )
         return
 
+    stale = held[held["IsStale"]]
+    if not stale.empty:
+        st.warning(
+            "아래 종목은 가격 데이터가 최신 거래일까지 갱신되지 않았습니다. "
+            "표의 '현재가'와 매도 신호는 그 시점 기준이므로 그대로 믿으면 "
+            "안 됩니다: "
+            + ", ".join(
+                f"{row.Ticker}({row.Date.date()})" for row in stale.itertuples()
+            )
+        )
+
     urgent = held[held["SellSignal"].isin(URGENT_SIGNALS)]
     if not urgent.empty:
         st.error(
@@ -2111,10 +2228,12 @@ def render_holdings_status(held: pd.DataFrame, missing: list[str]) -> None:
         )
 
     show = held[list(HOLDINGS_COLS)].rename(columns=HOLDINGS_COLS)
+    show["기준일"] = pd.to_datetime(show["기준일"]).dt.date
     display_dataframe(show.round(2))
     st.caption(
         "스크리닝 통과 여부와 무관하게 보유 종목 전체를 평가합니다. "
-        "추세를 잃어 후보에서 빠진 종목도 여기에서는 계속 추적됩니다."
+        "추세를 잃어 후보에서 빠진 종목도 여기에서는 계속 추적됩니다. "
+        "'기준일'이 위의 분석 기준일과 다르면 그 종목은 데이터가 오래된 것입니다."
     )
 
 
