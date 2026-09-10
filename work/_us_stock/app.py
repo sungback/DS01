@@ -42,7 +42,6 @@ import mplfinance as mpf
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 
 
@@ -123,6 +122,19 @@ SCORE_WEIGHT_LIQUIDITY = 5
 IDEAL_MA20_DIST = 0.05
 MA20_DIST_TOLERANCE = 0.07
 
+# BuyScore 절대 배점 기준.
+# 백분위(순위)는 그날의 모집단 구성에 따라 같은 종목의 점수를 바꾸고,
+# 크기 정보를 버린다(6-1M 15%와 154%가 비슷한 점수가 된다).
+# 그래서 네 성분 모두 원시 지표를 고정 구간에 대응시킨다.
+# 기본값은 S&P 500 전체 분포에서 뽑았다:
+#   모멘텀 p90≈35%, 변동성 p10≈1.0%/p90≈3.2%, 거래대금 p10≈$130M/p90≈$1.55B
+# 모멘텀 만점 기준은 상위 종목이 뭉개지지 않도록 p90보다 넉넉히 잡는다.
+SCORE_MOMENTUM_FULL = 0.60
+SCORE_VOL_FULL = 0.010
+SCORE_VOL_ZERO = 0.032
+SCORE_DOLLAR_MIN = 130_000_000.0
+SCORE_DOLLAR_FULL = 1_550_000_000.0
+
 # 캔들차트에 함께 그리는 이동평균과 색상
 CHART_MA_PERIODS = (20, 60, 120, 200)
 CHART_MA_COLORS = ("orange", "green", "purple", "black")
@@ -136,7 +148,13 @@ MAX_CHART_DAYS = 250
 SURGE_DAY_GAIN5 = 0.10
 SURGE_RETURN20 = 0.20
 OVERHEAT_MA20_DIST = 0.09
-STRONG_MOMENTUM_PCT = 0.85
+# 분류 임계값은 모두 절대 기준이다. 백분위로 두면 그날 분석에 성공한
+# 종목 구성에 따라 같은 종목의 등급이 바뀐다.
+# 균형형 기본값은 기존 백분위 0.70의 전체 분포 등가값이다
+# (모멘텀 p70≈18.3%, 변동성 p70≈2.10%).
+BAL_MOMENTUM_MIN = 0.18
+BAL_VOL_MAX = 0.021
+STRONG_MOMENTUM_MIN = 0.40
 STRONG_MAX_MA20_DIST = 0.10
 LOW_HEAT_MA20_DIST = 0.03
 LOW_HEAT_RETURN20 = 0.08
@@ -158,11 +176,25 @@ TYPE_EXPLAIN = {
     "일반": "무난한 상승추세 종목",
 }
 
-# 실제 보유 종목의 매수가/직접 손절가가 있다면 여기에 입력
+# 사이드바 '보유 종목' 입력란의 초기값.
+# 코드로 미리 채워두고 싶을 때만 사용하고, 평소에는 화면에서 입력한다.
 # 예: BUY_PRICE = {"AAPL": 220.0}
 # 예: BUY_STOP = {"AAPL": 205.0}
 BUY_PRICE: dict[str, float] = {}
 BUY_STOP: dict[str, float] = {}
+
+# 보유 단계 판정 라벨. 조건 순서와 1:1로 대응한다.
+STAGE_LABELS = ["손절 구간", "추세 이탈", "MA20 이탈", "2R 이상", "1R 이상"]
+SIGNAL_LABELS = [
+    "전량 손절",
+    "매도",
+    "주의",
+    "30% 매도 → 남은 40% MA20 추적",
+    "30% 매도",
+]
+URGENT_SIGNALS = ("전량 손절", "매도")
+NOT_HELD_STAGE = "미보유"
+NOT_HELD_SIGNAL = "-"
 
 # matplotlib 동시 실행 충돌 방지
 PLOT_LOCK = RLock()
@@ -170,7 +202,7 @@ PLOT_LOCK = RLock()
 
 def keep_selectbox_options_at_top() -> None:
     """Streamlit 1.56 selectbox의 잘못된 초기 가상 스크롤을 보정한다."""
-    components.html(
+    st.iframe(
         """
         <script>
         const parentDocument = window.parent.document;
@@ -202,8 +234,7 @@ def keep_selectbox_options_at_top() -> None:
         resetVirtualDropdown();
         </script>
         """,
-        height=0,
-        scrolling=False,
+        height=1,  # st.iframe은 0을 허용하지 않는다(사실상 보이지 않는 높이)
     )
 
 
@@ -296,13 +327,25 @@ class ScreenParams:
     max_ret20: float
     max_ma20_dist: float
     max_day_gain5: float
-    bal_mom_pct: float
+    bal_momentum_min: float
     bal_ret20_max: float
     bal_ma20_min: float
     bal_ma20_max: float
     bal_day_gain5: float
-    bal_vol_pct: float
+    bal_vol_max: float
     max_stop_loss: float
+    # 균형형보다 먼저 적용되는 위험 라벨 기준
+    overheat_ma20_dist: float
+    surge_return20: float
+    surge_day_gain5: float
+    # BuyScore 절대 배점 기준
+    score_momentum_full: float
+    score_vol_full: float
+    score_vol_zero: float
+    score_dollar_min: float
+    score_dollar_full: float
+    # 강한추세 판정 기준(절대 모멘텀)
+    strong_momentum_min: float
 
 
 @dataclass(frozen=True)
@@ -317,6 +360,8 @@ class SidebarConfig:
     chart_n: int
     chart_days: int
     screen: ScreenParams
+    buy_price: dict[str, float]
+    buy_stop: dict[str, float]
 
 
 # ============================================================
@@ -662,7 +707,7 @@ def check_required_files() -> list[str]:
 # 분석 (캐시)
 # ============================================================
 @st.cache_data(show_spinner=False)
-def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool]:
+def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool | None]:
     market_rows = []
 
     for ticker in MARKET_TICKERS:
@@ -673,13 +718,18 @@ def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool]:
         df["Momentum6_1M"] = df["Close"].shift(22) / df["Close"].shift(126) - 1
 
         last = df.iloc[-1]
+        # MA200을 계산할 데이터가 부족하면 NaN이 된다. 이때 False로 접으면
+        # "데이터 부족"이 "하락장"으로 둔갑하므로 None(판정 불가)으로 남긴다.
+        above_ma200 = (
+            None if pd.isna(last["MA200"]) else bool(last["Close"] > last["MA200"])
+        )
         market_rows.append(
             {
                 "Ticker": ticker,
                 "Date": last["Date"],
                 "Close": last["Close"],
                 "MA200": last["MA200"],
-                "AboveMA200": bool(last["Close"] > last["MA200"]),
+                "AboveMA200": above_ma200,
                 "Momentum6_1M": last["Momentum6_1M"],
             }
         )
@@ -687,7 +737,11 @@ def analyze_market() -> tuple[pd.DataFrame, pd.Timestamp, float, bool]:
     market = pd.DataFrame(market_rows)
     spy_date = pd.Timestamp(market.loc[market["Ticker"] == "SPY", "Date"].iloc[0])
     spy_mom = float(market.loc[market["Ticker"] == "SPY", "Momentum6_1M"].iloc[0])
-    spy_market_ok = bool(market.loc[market["Ticker"] == "SPY", "AboveMA200"].iloc[0])
+    # DataFrame이 bool dtype으로 추론되면 .iloc[0]은 numpy.bool_을 돌려준다.
+    # np.True_ is True 가 False이므로 호출부의 동일성 비교가 깨진다.
+    # 여기서 순수 파이썬 bool | None 로 정규화한다.
+    raw_ok = market.loc[market["Ticker"] == "SPY", "AboveMA200"].iloc[0]
+    spy_market_ok = None if pd.isna(raw_ok) else bool(raw_ok)
     return market, spy_date, spy_mom, spy_market_ok
 
 
@@ -839,22 +893,49 @@ def _build_filter_summary(result: pd.DataFrame, params: ScreenParams) -> pd.Data
     )
 
 
-def _score_candidates(candidates: pd.DataFrame) -> None:
-    """후보 종목 내 백분위와 BuyScore(100점)를 계산한다."""
-    candidates["MomentumPct"] = candidates["Momentum6_1M"].rank(pct=True)
-    candidates["LiquidityPct"] = candidates["AvgDollar20"].rank(pct=True)
-    candidates["VolatilityPct"] = candidates["Volatility20"].rank(pct=True)
+def _add_universe_percentiles(result: pd.DataFrame) -> None:
+    """분석에 성공한 전체 종목 안에서의 백분위를 참고용으로 붙인다.
 
+    분류 임계값과 BuyScore가 모두 절대 기준으로 바뀐 뒤로 이 값들은
+    판정에 쓰이지 않는다. 내려받는 CSV에서 "이 종목이 전체 중 몇 등인가"를
+    확인할 수 있도록 계산만 남겨둔다. 후보가 아니라 전체 종목을 모집단으로
+    삼아야 그날의 필터 설정에 따라 값이 출렁이지 않는다.
+    """
+    result["MomentumPct"] = result["Momentum6_1M"].rank(pct=True)
+    result["LiquidityPct"] = result["AvgDollar20"].rank(pct=True)
+    result["VolatilityPct"] = result["Volatility20"].rank(pct=True)
+
+
+def _score_candidates(candidates: pd.DataFrame, params: ScreenParams) -> None:
+    """절대 척도로 BuyScore(100점)를 계산한다.
+
+    네 성분 모두 원시 지표를 고정 구간에 대응시킨다. 가중치는 "최대 배점"을
+    뜻하며, 어떤 성분이 실제로 순위를 얼마나 갈랐는지는 후보군의 분산에
+    따라 달라진다. 그 차이는 build_score_influence()로 화면에서 확인한다.
+    """
+    momentum_fit = (
+        candidates["Momentum6_1M"] / params.score_momentum_full
+    ).clip(0, 1)
     distance_fit = (
-        1 - abs(candidates["MA20Dist"] - IDEAL_MA20_DIST) / MA20_DIST_TOLERANCE
+        1 - (candidates["MA20Dist"] - IDEAL_MA20_DIST).abs() / MA20_DIST_TOLERANCE
+    ).clip(0, 1)
+    stability_fit = (
+        (params.score_vol_zero - candidates["Volatility20"])
+        / (params.score_vol_zero - params.score_vol_full)
+    ).clip(0, 1)
+    # 거래대금은 종목 간 편차가 100배를 넘으므로 로그 척도로 본다.
+    dollar_ratio = (candidates["AvgDollar20"] / params.score_dollar_min).clip(
+        lower=1e-9
+    )
+    liquidity_fit = (
+        np.log10(dollar_ratio)
+        / np.log10(params.score_dollar_full / params.score_dollar_min)
     ).clip(0, 1)
 
-    candidates["MomentumScore"] = candidates["MomentumPct"] * SCORE_WEIGHT_MOMENTUM
+    candidates["MomentumScore"] = momentum_fit * SCORE_WEIGHT_MOMENTUM
     candidates["DistanceScore"] = distance_fit * SCORE_WEIGHT_DISTANCE
-    candidates["StabilityScore"] = (
-        1 - candidates["VolatilityPct"]
-    ) * SCORE_WEIGHT_STABILITY
-    candidates["LiquidityScore"] = candidates["LiquidityPct"] * SCORE_WEIGHT_LIQUIDITY
+    candidates["StabilityScore"] = stability_fit * SCORE_WEIGHT_STABILITY
+    candidates["LiquidityScore"] = liquidity_fit * SCORE_WEIGHT_LIQUIDITY
     candidates["BuyScore"] = (
         candidates["MomentumScore"]
         + candidates["DistanceScore"]
@@ -863,21 +944,31 @@ def _score_candidates(candidates: pd.DataFrame) -> None:
     )
 
 
+MARKET_UNKNOWN_LABEL = "판정 불가"
+
+
+def market_state_label(spy_market_ok: bool | None) -> str:
+    """시장 상태를 상승장/방어장/판정 불가 세 갈래로 표현한다."""
+    if spy_market_ok is None:
+        return MARKET_UNKNOWN_LABEL
+    return "상승장" if spy_market_ok else "방어장"
+
+
 def _classify_types(candidates: pd.DataFrame, params: ScreenParams) -> None:
     """유형(급등주의/과열주의/균형형/강한추세/저과열/일반)과 위험도·설명을 채운다."""
     # 앞 조건이 우선한다.
     balanced = (
-        (candidates["MomentumPct"] >= params.bal_mom_pct)
+        (candidates["Momentum6_1M"] >= params.bal_momentum_min)
         & candidates["Return20"].between(0, params.bal_ret20_max)
         & candidates["MA20Dist"].between(params.bal_ma20_min, params.bal_ma20_max)
         & (candidates["MaxDayGain5"] <= params.bal_day_gain5)
-        & (candidates["VolatilityPct"] <= params.bal_vol_pct)
+        & (candidates["Volatility20"] <= params.bal_vol_max)
     )
-    surge = (candidates["MaxDayGain5"] > SURGE_DAY_GAIN5) | (
-        candidates["Return20"] > SURGE_RETURN20
+    surge = (candidates["MaxDayGain5"] > params.surge_day_gain5) | (
+        candidates["Return20"] > params.surge_return20
     )
-    overheated = candidates["MA20Dist"] > OVERHEAT_MA20_DIST
-    strong = (candidates["MomentumPct"] >= STRONG_MOMENTUM_PCT) & (
+    overheated = candidates["MA20Dist"] > params.overheat_ma20_dist
+    strong = (candidates["Momentum6_1M"] >= params.strong_momentum_min) & (
         candidates["MA20Dist"] <= STRONG_MAX_MA20_DIST
     )
     low_heat = (candidates["MA20Dist"] < LOW_HEAT_MA20_DIST) & (
@@ -893,14 +984,66 @@ def _classify_types(candidates: pd.DataFrame, params: ScreenParams) -> None:
     candidates["Explain"] = candidates["Type"].map(TYPE_EXPLAIN)
 
 
+def initial_risk_stop(
+    entry: pd.Series, explicit_stop: pd.Series, max_stop_loss: float
+) -> pd.Series:
+    """R(위험 1단위)의 기준이 되는 진입 시 손절가.
+
+    직접 입력한 손절가가 매수가보다 낮으면 그것을 쓰고, 아니면 최대
+    손절폭을 적용한다. 매수가 이상으로 지정한 손절가(이익 확정용)는
+    위험의 기준이 될 수 없으므로 제외한다.
+    """
+    fallback = entry * (1 - max_stop_loss)
+    usable = explicit_stop.notna() & (explicit_stop < entry)
+    return fallback.where(~usable, explicit_stop)
+
+
+def add_trade_levels(frame: pd.DataFrame, risk: pd.Series | None = None) -> None:
+    """매수가와 위험 1단위(R)로부터 1R/2R 목표가를 채운다.
+
+    risk를 주지 않으면 현재 손절가까지의 거리를 R로 쓴다(신규 진입 기준).
+    보유 종목은 손절가가 MA60을 따라 올라가므로 이 방식을 쓰면
+    손절가가 매수가를 넘어선 순간 R이 음수가 되고 목표가가 매수가
+    아래로 내려간다. 그때는 진입 시 감수한 손실폭을 R로 고정한다.
+    """
+    frame["R"] = frame["EntryPrice"] - frame["StopPrice"] if risk is None else risk
+    frame["Target1R"] = frame["EntryPrice"] + frame["R"]
+    frame["Target2R"] = frame["EntryPrice"] + 2 * frame["R"]
+
+
+def evaluate_position(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """현재가를 손절가·이동평균·목표가와 비교해 단계와 매도 신호를 판정한다.
+
+    실제 매수가가 있는 보유 종목에서만 의미가 있다. 스크리닝 후보는
+    정의상 Close > MA20 > MA60 이고 매수가가 없으면 EntryPrice == Close 라
+    다섯 조건 중 어느 것도 성립할 수 없다.
+    """
+    price = frame["Close"]
+    conditions = [
+        price <= frame["StopPrice"],
+        price < frame["MA60"],
+        price < frame["MA20"],
+        price >= frame["Target2R"],
+        price >= frame["Target1R"],
+    ]
+    return (
+        np.select(conditions, STAGE_LABELS, default="1R 전"),
+        np.select(conditions, SIGNAL_LABELS, default="보유"),
+    )
+
+
 def _build_trade_columns(
-    candidates: pd.DataFrame, params: ScreenParams, spy_market_ok: bool
+    candidates: pd.DataFrame,
+    params: ScreenParams,
+    spy_market_ok: bool | None,
+    buy_price: dict[str, float],
+    buy_stop: dict[str, float],
 ) -> None:
     """매수가/손절가/목표가와 현재 단계·매도 신호를 채운다."""
-    # BUY_PRICE에 실제 보유 매수가가 있으면 우선 사용하고,
-    # 없으면 현재가를 신규 매수가로 사용한다.
+    # 보유 매수가가 있으면 우선 사용하고, 없으면 현재가를 신규 매수가로 쓴다.
+    candidates["IsHeld"] = candidates["Ticker"].isin(buy_price)
     candidates["EntryPrice"] = (
-        candidates["Ticker"].map(BUY_PRICE).fillna(candidates["Close"])
+        candidates["Ticker"].map(buy_price).fillna(candidates["Close"])
     )
 
     # MA60 또는 최대 허용 손실률 중 더 높은 가격을 자동 손절가로 사용
@@ -910,33 +1053,45 @@ def _build_trade_columns(
     )
     candidates["StopPrice"] = (
         candidates["Ticker"]
-        .map(BUY_STOP)
+        .map(buy_stop)
         .fillna(pd.Series(auto_stop, index=candidates.index))
     )
 
-    candidates["R"] = candidates["EntryPrice"] - candidates["StopPrice"]
-    candidates["Target1R"] = candidates["EntryPrice"] + candidates["R"]
-    candidates["Target2R"] = candidates["EntryPrice"] + 2 * candidates["R"]
+    # 손절가는 MA60을 따라 올라간다. 보유 종목은 그 손절가가 매수가를
+    # 넘어선 순간(수익 구간의 정상적인 상태) R이 음수가 되어 목표가가
+    # 매수가 아래로 내려가므로, 진입 시 감수한 손실폭을 R로 고정한다.
+    # 미보유(신규 진입)는 EntryPrice == Close 이고 후보는 Close > MA60 이라
+    # 손절가까지의 거리가 그대로 양수 R이 된다.
+    initial_stop = initial_risk_stop(
+        candidates["EntryPrice"],
+        candidates["Ticker"].map(buy_stop),
+        params.max_stop_loss,
+    )
+    add_trade_levels(
+        candidates,
+        pd.Series(
+            np.where(
+                candidates["IsHeld"],
+                candidates["EntryPrice"] - initial_stop,
+                candidates["EntryPrice"] - candidates["StopPrice"],
+            ),
+            index=candidates.index,
+        ),
+    )
 
-    price = candidates["Close"]
-    sell_conditions = [
-        price <= candidates["StopPrice"],
-        price < candidates["MA60"],
-        price < candidates["MA20"],
-        price >= candidates["Target2R"],
-        price >= candidates["Target1R"],
-    ]
-    candidates["CurrentStage"] = np.select(
-        sell_conditions,
-        ["손절 구간", "추세 이탈", "MA20 이탈", "2R 이상", "1R 이상"],
-        default="1R 전",
+    # 미보유 종목은 판정 대상이 아니다. 예전에는 후보 전체를 판정했지만
+    # 후보는 위 docstring의 이유로 항상 "1R 전"/"보유"만 나왔다.
+    stage, signal = evaluate_position(candidates)
+    candidates["CurrentStage"] = np.where(
+        candidates["IsHeld"], stage, NOT_HELD_STAGE
     )
-    candidates["SellSignal"] = np.select(
-        sell_conditions,
-        ["전량 손절", "매도", "주의", "30% 매도 → 남은 40% MA20 추적", "30% 매도"],
-        default="보유",
+    candidates["SellSignal"] = np.where(
+        candidates["IsHeld"], signal, NOT_HELD_SIGNAL
     )
-    candidates["BuyAllowed"] = "허용" if spy_market_ok else "중단"
+    if spy_market_ok is None:
+        candidates["BuyAllowed"] = MARKET_UNKNOWN_LABEL
+    else:
+        candidates["BuyAllowed"] = "허용" if spy_market_ok else "중단"
 
 
 def _add_display_units(candidates: pd.DataFrame) -> None:
@@ -953,11 +1108,14 @@ def apply_screen_and_score(
     result: pd.DataFrame,
     params: ScreenParams,
     *,
-    spy_market_ok: bool,
+    spy_market_ok: bool | None,
+    buy_price: dict[str, float],
+    buy_stop: dict[str, float],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """스크리닝 → 점수 → 유형 분류 → 매매 계획까지 수행한다."""
     result = result.copy()
 
+    _add_universe_percentiles(result)
     _apply_screen_flags(result, params)
     filter_summary = _build_filter_summary(result, params)
 
@@ -965,9 +1123,9 @@ def apply_screen_and_score(
     if candidates.empty:
         return candidates, filter_summary
 
-    _score_candidates(candidates)
+    _score_candidates(candidates, params)
     _classify_types(candidates, params)
-    _build_trade_columns(candidates, params, spy_market_ok)
+    _build_trade_columns(candidates, params, spy_market_ok, buy_price, buy_stop)
 
     candidates = candidates.sort_values("BuyScore", ascending=False).reset_index(
         drop=True
@@ -1033,6 +1191,131 @@ def build_trade_plan(candidates: pd.DataFrame, top_n: int) -> pd.DataFrame:
     trade_plan[price_cols] = trade_plan[price_cols].round(2)
     trade_plan["BuyScore"] = trade_plan["BuyScore"].round(2)
     return trade_plan
+
+
+SCORE_COMPONENTS = {
+    "모멘텀": ("MomentumScore", SCORE_WEIGHT_MOMENTUM),
+    "MA20 이격": ("DistanceScore", SCORE_WEIGHT_DISTANCE),
+    "안정성": ("StabilityScore", SCORE_WEIGHT_STABILITY),
+    "유동성": ("LiquidityScore", SCORE_WEIGHT_LIQUIDITY),
+}
+INFLUENCE_ALERT_GAP = 10.0
+
+
+def build_score_influence(candidates: pd.DataFrame) -> pd.DataFrame:
+    """각 성분이 실제로 순위를 얼마나 갈랐는지 계산한다.
+
+    배점은 "최대 몇 점까지 딸 수 있는가"일 뿐이고, 순위를 실제로 가르는
+    힘은 후보들 사이에서 그 성분이 얼마나 벌어졌는가(표준편차)로 정해진다.
+    스크리닝을 통과한 축은 이미 값이 비슷해져 있으므로, 많이 거른 축일수록
+    배점에 비해 실제 영향력이 작아진다. 둘이 크게 벌어지면 그 성분의 배점
+    기준이 지금 후보군과 맞지 않는다는 신호다.
+    """
+    if len(candidates) < 2:
+        return pd.DataFrame()
+
+    spreads = {
+        name: float(candidates[col].std())
+        for name, (col, _) in SCORE_COMPONENTS.items()
+    }
+    total_spread = sum(spreads.values())
+    if not np.isfinite(total_spread) or total_spread <= 0:
+        return pd.DataFrame()
+
+    total_weight = sum(weight for _, weight in SCORE_COMPONENTS.values())
+    rows = []
+    for name, (col, weight) in SCORE_COMPONENTS.items():
+        declared = weight / total_weight * 100
+        actual = spreads[name] / total_spread * 100
+        rows.append(
+            {
+                "성분": name,
+                "배점": weight,
+                "선언 비중(%)": declared,
+                "실제 기여(%)": actual,
+                "차이(%p)": actual - declared,
+                "평균 점수": float(candidates[col].mean()),
+                "점수 폭": float(candidates[col].max() - candidates[col].min()),
+            }
+        )
+    return pd.DataFrame(rows).round(1)
+
+
+def build_holdings_status(
+    buy_price: dict[str, float],
+    buy_stop: dict[str, float],
+    params: ScreenParams,
+    spy_date: pd.Timestamp,
+) -> tuple[pd.DataFrame, list[str]]:
+    """보유 종목을 스크리닝 통과 여부와 무관하게 평가한다.
+
+    후보(ScreenOK)는 정의상 MA 위에 있으므로 후보 안에서만 판정하면
+    손절·추세 이탈 신호가 절대 뜨지 않는다. 정작 신호가 필요한 순간은
+    보유 종목이 추세를 잃고 후보에서 빠질 때이므로, 여기서는 원본 CSV를
+    직접 읽어 지표를 다시 계산한다.
+
+    반환: (평가 결과, 가격 데이터가 없어 평가하지 못한 티커 목록)
+    """
+    rows: list[dict] = []
+    missing: list[str] = []
+
+    for ticker, entry in sorted(buy_price.items()):
+        file = STOCK_DIR / f"{ticker}.csv"
+        if not file.exists():
+            missing.append(ticker)
+            continue
+
+        try:
+            df = pd.read_csv(file, parse_dates=["Date"])
+            df = df.sort_values("Date").drop_duplicates("Date")
+            df = df[df["Date"] <= spy_date]
+            if df.empty:
+                missing.append(ticker)
+                continue
+
+            close = df["Close"]
+            ma20 = close.rolling(20).mean().iloc[-1]
+            ma60 = close.rolling(60).mean().iloc[-1]
+
+            # 손절가는 직접 입력값이 우선, 없으면 MA60까지 따라 올린다.
+            explicit_stop = buy_stop.get(ticker)
+            floor_stop = entry * (1 - params.max_stop_loss)
+            if explicit_stop is not None:
+                stop_price = float(explicit_stop)
+            elif pd.notna(ma60):
+                stop_price = max(float(ma60), floor_stop)
+            else:
+                stop_price = floor_stop
+
+            rows.append(
+                {
+                    "Ticker": ticker,
+                    "Date": df["Date"].iloc[-1],
+                    "Close": float(close.iloc[-1]),
+                    "MA20": ma20,
+                    "MA60": ma60,
+                    "EntryPrice": float(entry),
+                    "ExplicitStop": explicit_stop,
+                    "StopPrice": stop_price,
+                }
+            )
+        except Exception:
+            missing.append(ticker)
+
+    if not rows:
+        return pd.DataFrame(), missing
+
+    held = pd.DataFrame(rows)
+    held["ExplicitStop"] = pd.to_numeric(held["ExplicitStop"], errors="coerce")
+    initial_stop = initial_risk_stop(
+        held["EntryPrice"], held["ExplicitStop"], params.max_stop_loss
+    )
+    add_trade_levels(held, held["EntryPrice"] - initial_stop)
+    stage, signal = evaluate_position(held)
+    held["CurrentStage"] = stage
+    held["SellSignal"] = signal
+    held["Return_%"] = (held["Close"] / held["EntryPrice"] - 1) * 100
+    return held, missing
 
 
 # ============================================================
@@ -1192,6 +1475,76 @@ def init_session_state() -> None:
             st.session_state[key] = default
 
 
+def _parse_holdings(edited: pd.DataFrame) -> tuple[dict[str, float], dict[str, float]]:
+    """보유 종목 편집기의 내용을 매수가/손절가 딕셔너리로 변환한다."""
+    buy_price: dict[str, float] = {}
+    buy_stop: dict[str, float] = {}
+
+    for _, row in edited.iterrows():
+        raw = row.get("티커")
+        if raw is None or pd.isna(raw):
+            continue
+        # 저장된 CSV는 Yahoo 표기(BRK-B)를 쓰므로 입력도 맞춰 정규화한다.
+        ticker = str(raw).strip().upper().replace(".", "-")
+        if not ticker:
+            continue
+
+        price = row.get("매수가")
+        if pd.isna(price) or float(price) <= 0:
+            continue
+        buy_price[ticker] = float(price)
+
+        stop = row.get("손절가")
+        if pd.notna(stop) and float(stop) > 0:
+            buy_stop[ticker] = float(stop)
+
+    return buy_price, buy_stop
+
+
+def render_holdings_editor() -> tuple[dict[str, float], dict[str, float]]:
+    """사이드바에서 보유 종목의 매수가·손절가를 입력받는다."""
+    # 빈 표에서도 편집기가 열 타입을 올바로 잡도록 dtype을 명시한다.
+    tickers = list(BUY_PRICE)
+    seed = pd.DataFrame(
+        {
+            "티커": pd.Series(tickers, dtype="string"),
+            "매수가": pd.Series(
+                [BUY_PRICE[t] for t in tickers], dtype="float64"
+            ),
+            "손절가": pd.Series(
+                [BUY_STOP.get(t) for t in tickers], dtype="float64"
+            ),
+        }
+    )
+
+    edited = st.data_editor(
+        seed,
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "티커": st.column_config.TextColumn(
+                "티커", help="예: AAPL, BRK-B", max_chars=10
+            ),
+            "매수가": st.column_config.NumberColumn(
+                "매수가", min_value=0.0, format="%.2f"
+            ),
+            "손절가": st.column_config.NumberColumn(
+                "손절가(선택)",
+                help="비워두면 MA60과 최대 손절폭 중 높은 값을 자동 사용합니다.",
+                min_value=0.0,
+                format="%.2f",
+            ),
+        },
+        key="holdings_editor",
+    )
+    st.caption(
+        "매수가를 입력한 종목만 '현재 단계'와 '매도 신호'를 판정합니다. "
+        "빈 행은 무시됩니다."
+    )
+    return _parse_holdings(edited)
+
+
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("분석 설정")
@@ -1224,10 +1577,20 @@ def render_sidebar() -> SidebarConfig:
 
         chart_type = st.selectbox("종목 유형", TYPE_OPTIONS, index=0, key="chart_type")
 
+        with st.expander("보유 종목", expanded=False):
+            buy_price, buy_stop = render_holdings_editor()
+
         with st.expander("기본 필터", expanded=False):
             min_rows = st.number_input("최소 데이터 행 수", 120, 1000, 130, 10)
+            # 기본값 $20M은 S&P 500 503종목이 전부 통과해 필터 구실을 못 했다.
+            # 전체 분포는 p10≈$130M, 중앙값≈$346M이다.
             min_dollar_volume_m = st.number_input(
-                "20일 평균 거래대금 최소($M)", 1.0, 1000.0, 20.0, 5.0
+                "20일 평균 거래대금 최소($M)",
+                1.0,
+                5000.0,
+                100.0,
+                10.0,
+                help="S&P 500 전체 분포: p10≈$130M, 중앙값≈$346M, p90≈$1,555M.",
             )
             max_ret20_pct = st.number_input("20일 수익률 상한(%)", 1.0, 100.0, 25.0, 1.0)
             max_ma20_dist_pct = st.number_input(
@@ -1237,8 +1600,53 @@ def render_sidebar() -> SidebarConfig:
                 "최근 5일 최대 일간상승률 상한(%)", 1.0, 50.0, 15.0, 1.0
             )
 
+        with st.expander("유형 분류 기준", expanded=False):
+            st.caption(
+                "적용 순서: 급등주의 → 과열주의 → 균형형 → 강한추세 → 저과열. "
+                "앞 조건이 먼저 적용되므로, 급등주의·과열주의 기준을 넘어선 "
+                "종목은 균형형 조건을 만족해도 균형형이 되지 않습니다."
+            )
+            overheat_ma20_dist_pct = st.number_input(
+                "과열주의: MA20 이격 초과(%)",
+                1.0,
+                50.0,
+                OVERHEAT_MA20_DIST * 100,
+                0.5,
+            )
+            surge_return20_pct = st.number_input(
+                "급등주의: 20일 수익률 초과(%)",
+                1.0,
+                100.0,
+                SURGE_RETURN20 * 100,
+                1.0,
+            )
+            surge_day_gain5_pct = st.number_input(
+                "급등주의: 5일 최대 일간상승률 초과(%)",
+                1.0,
+                50.0,
+                SURGE_DAY_GAIN5 * 100,
+                1.0,
+            )
+
+            strong_momentum_min_pct = st.number_input(
+                "강한추세: 6-1M 모멘텀 이상(%)",
+                1.0,
+                200.0,
+                STRONG_MOMENTUM_MIN * 100,
+                5.0,
+                help="백분위가 아닌 절대 기준이라 후보 수가 달라져도 "
+                "같은 종목은 같은 등급을 받습니다.",
+            )
+
         with st.expander("균형형 분류 기준", expanded=False):
-            bal_mom_pct_pct = st.slider("모멘텀 백분위 최소", 0, 100, 70, 5)
+            bal_momentum_min_pct = st.number_input(
+                "균형형: 6-1M 모멘텀 이상(%)",
+                0.0,
+                200.0,
+                BAL_MOMENTUM_MIN * 100,
+                1.0,
+                help="전체 분포 참고: p60≈13%, p70≈18%, p80≈25%.",
+            )
             bal_ret20_max_pct = st.number_input(
                 "균형형 20일 수익률 상한(%)", 0.0, 100.0, 15.0, 1.0
             )
@@ -1251,7 +1659,101 @@ def render_sidebar() -> SidebarConfig:
             bal_day_gain5_pct = st.number_input(
                 "균형형 최근 5일 최대 상승률(%)", 0.0, 50.0, 10.0, 1.0
             )
-            bal_vol_pct_pct = st.slider("균형형 변동성 백분위 최대", 0, 100, 70, 5)
+            bal_vol_max_pct = st.number_input(
+                "균형형: 20일 변동성 이하(%)",
+                0.1,
+                20.0,
+                BAL_VOL_MAX * 100,
+                0.1,
+                help="전체 분포 참고: p60≈1.85%, p70≈2.10%, p80≈2.44%.",
+            )
+
+            # 과열·급등 기준이 먼저 적용되므로, 균형형 창이 그 값을 넘어서면
+            # 넘어선 구간은 실제로 균형형이 될 수 없다.
+            # MA20 이격 '최소'에는 대응하는 상한이 없어 검사 대상이 아니다.
+            capped: list[str] = []
+            if bal_ma20_max_pct > overheat_ma20_dist_pct:
+                capped.append(
+                    f"MA20 이격 최대 {bal_ma20_max_pct:.1f}% → "
+                    f"{overheat_ma20_dist_pct:.1f}%(과열주의)"
+                )
+            if bal_ret20_max_pct > surge_return20_pct:
+                capped.append(
+                    f"20일 수익률 상한 {bal_ret20_max_pct:.1f}% → "
+                    f"{surge_return20_pct:.1f}%(급등주의)"
+                )
+            if bal_day_gain5_pct > surge_day_gain5_pct:
+                capped.append(
+                    f"5일 최대 상승률 {bal_day_gain5_pct:.1f}% → "
+                    f"{surge_day_gain5_pct:.1f}%(급등주의)"
+                )
+            if capped:
+                st.warning(
+                    "과열·급등 기준이 먼저 적용되어 아래 값은 실제로 "
+                    "더 낮게 동작합니다:\n"
+                    + "\n".join(f"- {item}" for item in capped)
+                )
+
+        with st.expander("BuyScore 배점 기준", expanded=False):
+            st.caption(
+                f"각 성분의 만점/0점 경계입니다. 배점은 모멘텀 "
+                f"{SCORE_WEIGHT_MOMENTUM} · 이격 {SCORE_WEIGHT_DISTANCE} · "
+                f"안정성 {SCORE_WEIGHT_STABILITY} · 유동성 "
+                f"{SCORE_WEIGHT_LIQUIDITY}점이며, 이 경계 안에서 비례 배분됩니다. "
+                "기본값은 S&P 500 전체 분포에서 뽑았습니다."
+            )
+            score_momentum_full_pct = st.number_input(
+                "모멘텀 만점 기준: 6-1M(%)",
+                5.0,
+                300.0,
+                SCORE_MOMENTUM_FULL * 100,
+                5.0,
+                help="이 값 이상이면 모멘텀 만점. 너무 낮으면 상위 종목이 모두 "
+                "만점으로 뭉개져 변별력을 잃습니다.",
+            )
+            score_vol_full_pct = st.number_input(
+                "안정성 만점 기준: 20일 변동성(%)",
+                0.1,
+                10.0,
+                SCORE_VOL_FULL * 100,
+                0.1,
+                help="이 값 이하면 안정성 만점.",
+            )
+            score_vol_zero_pct = st.number_input(
+                "안정성 0점 기준: 20일 변동성(%)",
+                0.2,
+                20.0,
+                SCORE_VOL_ZERO * 100,
+                0.1,
+                help="이 값 이상이면 안정성 0점.",
+            )
+            score_dollar_min_m = st.number_input(
+                "유동성 0점 기준($M)", 1.0, 5000.0, SCORE_DOLLAR_MIN / 1e6, 10.0
+            )
+            score_dollar_full_m = st.number_input(
+                "유동성 만점 기준($M)",
+                10.0,
+                50000.0,
+                SCORE_DOLLAR_FULL / 1e6,
+                50.0,
+                help="거래대금은 편차가 커서 로그 척도로 배분합니다.",
+            )
+
+            # 경계가 뒤집히면 0으로 나누게 되므로 기본값으로 되돌린다.
+            if score_vol_zero_pct <= score_vol_full_pct:
+                st.warning(
+                    "안정성 0점 기준은 만점 기준보다 커야 합니다. "
+                    "이번 계산은 기본값을 사용합니다."
+                )
+                score_vol_full_pct = SCORE_VOL_FULL * 100
+                score_vol_zero_pct = SCORE_VOL_ZERO * 100
+            if score_dollar_full_m <= score_dollar_min_m:
+                st.warning(
+                    "유동성 만점 기준은 0점 기준보다 커야 합니다. "
+                    "이번 계산은 기본값을 사용합니다."
+                )
+                score_dollar_min_m = SCORE_DOLLAR_MIN / 1e6
+                score_dollar_full_m = SCORE_DOLLAR_FULL / 1e6
 
         with st.expander("매매/출력 설정", expanded=False):
             max_stop_loss_pct = st.number_input("최대 손절폭(%)", 1.0, 30.0, 8.0, 0.5)
@@ -1280,13 +1782,22 @@ def render_sidebar() -> SidebarConfig:
         max_ret20=max_ret20_pct / 100,
         max_ma20_dist=max_ma20_dist_pct / 100,
         max_day_gain5=max_day_gain5_pct / 100,
-        bal_mom_pct=bal_mom_pct_pct / 100,
+        bal_momentum_min=bal_momentum_min_pct / 100,
         bal_ret20_max=bal_ret20_max_pct / 100,
         bal_ma20_min=bal_ma20_min_pct / 100,
         bal_ma20_max=bal_ma20_max_pct / 100,
         bal_day_gain5=bal_day_gain5_pct / 100,
-        bal_vol_pct=bal_vol_pct_pct / 100,
+        bal_vol_max=bal_vol_max_pct / 100,
         max_stop_loss=max_stop_loss_pct / 100,
+        overheat_ma20_dist=overheat_ma20_dist_pct / 100,
+        surge_return20=surge_return20_pct / 100,
+        surge_day_gain5=surge_day_gain5_pct / 100,
+        score_momentum_full=score_momentum_full_pct / 100,
+        score_vol_full=score_vol_full_pct / 100,
+        score_vol_zero=score_vol_zero_pct / 100,
+        score_dollar_min=score_dollar_min_m * 1_000_000,
+        score_dollar_full=score_dollar_full_m * 1_000_000,
+        strong_momentum_min=strong_momentum_min_pct / 100,
     )
     return SidebarConfig(
         start_date=start_date,
@@ -1297,6 +1808,8 @@ def render_sidebar() -> SidebarConfig:
         chart_n=int(chart_n),
         chart_days=int(chart_days),
         screen=screen,
+        buy_price=buy_price,
+        buy_stop=buy_stop,
     )
 
 
@@ -1347,7 +1860,9 @@ def run_auto_update(cfg: SidebarConfig) -> None:
         st.session_state.auto_update_error = None
 
         # 방금 변경된 CSV를 분석 캐시가 즉시 다시 읽도록 비운다.
-        st.cache_data.clear()
+        # 갱신 대상이 없었으면 디스크가 그대로이므로 캐시를 유지한다.
+        if pending:
+            st.cache_data.clear()
 
     except Exception as exc:
         # 네트워크 문제라도 로컬 데이터가 있으면 분석은 계속한다.
@@ -1478,6 +1993,8 @@ def run_analysis(cfg: SidebarConfig):
                 result,
                 cfg.screen,
                 spy_market_ok=spy_market_ok,
+                buy_price=cfg.buy_price,
+                buy_stop=cfg.buy_stop,
             )
 
             if not candidates.empty:
@@ -1496,22 +2013,29 @@ def run_analysis(cfg: SidebarConfig):
 def render_market_state(
     market: pd.DataFrame,
     spy_date: pd.Timestamp,
-    spy_market_ok: bool,
+    spy_market_ok: bool | None,
     result: pd.DataFrame,
     candidates: pd.DataFrame,
     error_df: pd.DataFrame,
     filter_summary: pd.DataFrame,
 ) -> None:
     spy_row = market.loc[market["Ticker"] == "SPY"].iloc[0]
-    market_state = "상승장" if spy_market_ok else "방어장"
+    market_state = market_state_label(spy_market_ok)
+    ma200 = spy_row["MA200"]
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("분석 기준일", str(pd.Timestamp(spy_date).date()))
     m2.metric("SPY", f"${spy_row['Close']:,.2f}")
-    m3.metric("SPY MA200", f"${spy_row['MA200']:,.2f}")
+    m3.metric("SPY MA200", "-" if pd.isna(ma200) else f"${ma200:,.2f}")
     m4.metric("시장 상태", market_state)
 
-    if not spy_market_ok:
+    if spy_market_ok is None:
+        st.warning(
+            "SPY의 MA200을 계산할 데이터가 부족합니다(200 거래일 미만). "
+            "시장 상태를 판정할 수 없으므로 하락장으로 간주하지 않습니다. "
+            "사이드바의 '지금 강제 갱신'으로 데이터를 채운 뒤 다시 확인하세요."
+        )
+    elif not spy_market_ok:
         st.warning(
             "SPY가 MA200 아래에 있습니다. "
             "신규 매수는 중단하거나 보수적으로 판단하는 구간입니다."
@@ -1525,8 +2049,10 @@ def render_market_state(
         market_show = market.copy()
         market_show["Date"] = pd.to_datetime(market_show["Date"]).dt.date
         market_show["Momentum6_1M_%"] = market_show["Momentum6_1M"] * 100
-        market_show["AboveMA200"] = market_show["AboveMA200"].map(
-            {True: "위", False: "아래"}
+        market_show["AboveMA200"] = (
+            market_show["AboveMA200"]
+            .map({True: "위", False: "아래"})
+            .fillna(MARKET_UNKNOWN_LABEL)
         )
         display_dataframe(
             market_show[
@@ -1539,6 +2065,57 @@ def render_market_state(
         if error_df is not None and not error_df.empty:
             st.markdown(f"#### 제외/오류 종목 ({len(error_df)}개)")
             display_dataframe(error_df.head(200))
+
+
+# ============================================================
+# 5-1. 보유 종목 현황
+# ============================================================
+HOLDINGS_COLS = {
+    "Ticker": "티커",
+    "Close": "현재가",
+    "EntryPrice": "매수가",
+    "Return_%": "수익률(%)",
+    "StopPrice": "손절가",
+    "Target1R": "1R(30%매도)",
+    "Target2R": "2R(30%매도)",
+    "MA20": "MA20",
+    "MA60": "MA60",
+    "CurrentStage": "현재단계",
+    "SellSignal": "매도신호",
+}
+
+
+def render_holdings_status(held: pd.DataFrame, missing: list[str]) -> None:
+    st.divider()
+    st.subheader("보유 종목 현황")
+
+    if missing:
+        st.warning(
+            "가격 데이터가 없어 평가하지 못한 티커: " + ", ".join(missing)
+        )
+
+    if held.empty:
+        st.info(
+            "사이드바 '보유 종목'에 티커와 매수가를 입력하면 "
+            "현재 단계와 매도 신호를 판정합니다."
+        )
+        return
+
+    urgent = held[held["SellSignal"].isin(URGENT_SIGNALS)]
+    if not urgent.empty:
+        st.error(
+            "매도 신호 발생: "
+            + ", ".join(
+                f"{row.Ticker}({row.SellSignal})" for row in urgent.itertuples()
+            )
+        )
+
+    show = held[list(HOLDINGS_COLS)].rename(columns=HOLDINGS_COLS)
+    display_dataframe(show.round(2))
+    st.caption(
+        "스크리닝 통과 여부와 무관하게 보유 종목 전체를 평가합니다. "
+        "추세를 잃어 후보에서 빠진 종목도 여기에서는 계속 추적됩니다."
+    )
 
 
 # ============================================================
@@ -1568,9 +2145,9 @@ SELECTED_COLS = [*_ID_COLS, "Type", "Risk", "BuyScore", *_PCT_COLS, "Explain"]
 
 
 def render_recommendations(
-    candidates: pd.DataFrame, spy_market_ok: bool, top_n: int
+    candidates: pd.DataFrame, spy_market_ok: bool | None, top_n: int
 ) -> None:
-    title_prefix = "매수 후보" if spy_market_ok else "관심 종목"
+    title_prefix = "매수 후보" if spy_market_ok is True else "관심 종목"
     st.markdown(f"#### {title_prefix} TOP {min(top_n, len(candidates))}")
     display_dataframe(candidates[RECOMMENDATION_COLS].head(top_n).round(2))
 
@@ -1581,6 +2158,8 @@ def render_recommendations(
         file_name="us_stock_analysis_result.csv",
         mime="text/csv",
     )
+
+    render_score_influence(candidates)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1605,6 +2184,32 @@ def render_recommendations(
 # ============================================================
 # 7. 선택 유형 / 매매 계획 / 모든 차트
 # ============================================================
+def render_score_influence(candidates: pd.DataFrame) -> None:
+    """배점과 실제 영향력이 얼마나 어긋났는지 보여준다."""
+    with st.expander("BuyScore 배점 진단", expanded=False):
+        st.caption(
+            "'선언 비중'은 배점이 차지하는 몫이고, '실제 기여'는 후보들 사이에서 "
+            "그 성분이 순위를 실제로 가른 정도입니다. 많이 걸러낸 축일수록 "
+            "후보 간 값이 비슷해져 배점보다 영향력이 작아집니다. "
+            "차이가 크면 사이드바의 'BuyScore 배점 기준'을 조정하세요."
+        )
+        influence = build_score_influence(candidates)
+        if influence.empty:
+            st.info("후보가 2개 이상이어야 기여도를 계산할 수 있습니다.")
+            return
+
+        display_dataframe(influence)
+
+        worst = influence.loc[influence["차이(%p)"].abs().idxmax()]
+        if abs(worst["차이(%p)"]) >= INFLUENCE_ALERT_GAP:
+            direction = "크게" if worst["차이(%p)"] > 0 else "작게"
+            st.warning(
+                f"'{worst['성분']}'의 실제 기여가 선언 비중보다 {direction} "
+                f"벗어났습니다 ({worst['선언 비중(%)']:.0f}% → "
+                f"{worst['실제 기여(%)']:.0f}%, {worst['차이(%p)']:+.0f}%p)."
+            )
+
+
 def render_charts(
     candidates: pd.DataFrame,
     spy_date: pd.Timestamp,
@@ -1716,6 +2321,11 @@ def main() -> None:
         error_df,
         filter_summary,
     )
+
+    held, missing_held = build_holdings_status(
+        cfg.buy_price, cfg.buy_stop, cfg.screen, spy_date
+    )
+    render_holdings_status(held, missing_held)
 
     if candidates.empty:
         st.warning("현재 설정에서 모든 조건을 통과한 종목이 없습니다.")
