@@ -6,6 +6,10 @@ import logging
 
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
+# 이 앱에서 발생한 오류를 기록할 로거
+logger = logging.getLogger(__name__)
+
+import hashlib
 import platform
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +20,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+
+# import 하는 것만으로 NanumGothic 폰트를 matplotlib에 등록한다.
+# 나눔폰트가 없는 Streamlit Cloud(리눅스)에서 한글이 깨지지 않게 해 준다.
+import koreanize_matplotlib  # noqa: F401
 from matplotlib.lines import Line2D
 import mplfinance as mpf
 import streamlit as st
@@ -82,13 +90,8 @@ DATA_FOLDER.mkdir(parents=True, exist_ok=True)
 # 파일 캐시 확인 주기: 1시간
 DATA_REFRESH_SECONDS = 60 * 60
 
-# 실제 매수가가 있으면 입력
-# 예: {"021240": 98200}
-BUY_PRICE = {}
-
-# 직접 정한 손절가가 있으면 입력
-# 예: {"021240": 92100}
-BUY_STOP = {}
+# 매수가와 손절가는 화면의 '보유 종목 입력' 표에서 직접 입력한다.
+# 입력한 값은 st.session_state["positions"]에 종목코드 기준으로 보관한다.
 
 # 데이터 파일 동시 갱신 충돌 방지
 DATA_LOCK = RLock()
@@ -102,6 +105,7 @@ PLOT_LOCK = RLock()
 # ==================================================
 
 # 운영체제에 따라 한글 폰트 선택
+# 리눅스의 NanumGothic은 위에서 import한 koreanize_matplotlib이 등록해 준다.
 font = {"Windows": "Malgun Gothic", "Darwin": "AppleGothic"}.get(
     platform.system(), "NanumGothic"
 )
@@ -109,9 +113,9 @@ font = {"Windows": "Malgun Gothic", "Darwin": "AppleGothic"}.get(
 # 설치된 폰트 확인
 available_fonts = {f.name for f in fm.fontManager.ttflist}
 
-# 해당 폰트가 없으면 기본 폰트 사용
+# 해당 폰트가 없으면 한글이 등록된 NanumGothic으로 대체
 if font not in available_fonts:
-    font = "DejaVu Sans"
+    font = "NanumGothic" if "NanumGothic" in available_fonts else "DejaVu Sans"
 
 plt.rcParams["font.family"] = font
 plt.rcParams["axes.unicode_minus"] = False
@@ -165,6 +169,34 @@ st.sidebar.caption("주가 파일은 1시간마다 최신 여부를 자동 확�
 # ==================================================
 
 
+def to_price(value):
+    """
+    표에 입력한 값을 가격 숫자로 바꾼다.
+
+    비어 있거나 숫자가 아니거나 0 이하이면 None(미입력)으로 본다.
+    """
+
+    if value is None or pd.isna(value):
+        return None
+
+    try:
+        value = float(value)
+
+    except (TypeError, ValueError):
+        return None
+
+    return value if value > 0 else None
+
+
+def won(value):
+    """가격을 원 단위 글자로 바꾼다. 값이 없으면 '-' 로 표시한다."""
+
+    if pd.isna(value):
+        return "-"
+
+    return f"{value:,.0f}원"
+
+
 def show_card(column, title, value):
     """작은 정보 카드 표시"""
 
@@ -181,7 +213,57 @@ def show_card(column, title, value):
 
 
 # ==================================================
-# 7. 주가 파일 캐시 준비
+# 7. 파일 저장 / 데이터 지문
+# ==================================================
+
+
+def save_if_changed(df, path, **kwargs):
+    """
+    내용이 실제로 달라졌을 때만 CSV로 저장한다.
+
+    같은 내용을 그대로 덮어쓰면 파일 수정시각만 바뀐다.
+    그러면 아래 data_fingerprint 값이 매번 달라져
+    화면 계산 결과 캐시가 쓸데없이 버려진다.
+
+    인코딩은 항상 UTF-8로 고정한다.
+    to_csv 의 기본값과 같아야 하고, 윈도우에서 종목명이 깨지지 않는다.
+    """
+
+    text = df.to_csv(**kwargs)
+
+    if path.exists():
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                return False
+
+        except Exception as e:
+            # 읽지 못하면 파일이 깨진 것이므로 새로 쓴다.
+            logger.warning("%s 비교 실패, 새로 저장합니다: %s", path.name, e)
+
+    path.write_text(text, encoding="utf-8")
+
+    return True
+
+
+def data_fingerprint():
+    """
+    stock_data 폴더 상태를 짧은 글자로 요약한다.
+
+    파일이 하나도 바뀌지 않으면 같은 값이 나온다.
+    이 값을 캐시 키로 쓰면 데이터가 그대로일 때 캐시가 유지된다.
+    """
+
+    parts = []
+
+    for f in sorted(DATA_FOLDER.glob("*.csv")):
+        info = f.stat()
+        parts.append(f"{f.name}:{info.st_size}:{info.st_mtime_ns}")
+
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+
+
+# ==================================================
+# 8. 주가 파일 캐시 준비
 # ==================================================
 
 
@@ -203,6 +285,9 @@ def prepare_stock_data():
         "오류": 0,
     }
 
+    # 오류가 난 종목코드 예시 (사이드바 표시용)
+    error_codes = []
+
     with DATA_LOCK:
         # ----------------------------------------------
         # ① KOSPI 종목 목록
@@ -212,8 +297,10 @@ def prepare_stock_data():
         try:
             stocks = fdr.StockListing("KOSPI")
 
-        except Exception:
+        except Exception as e:
             # 인터넷 오류 시 기존 목록 사용
+            logger.warning("KOSPI 종목 목록 조회 실패, 저장된 목록을 사용합니다: %s", e)
+
             if not list_file.exists():
                 raise RuntimeError(
                     "KOSPI 종목 목록을 받지 못했고 저장된 KOSPI_list.csv도 없습니다."
@@ -232,8 +319,8 @@ def prepare_stock_data():
         # 일반 종목만 사용
         stocks = stocks[stocks["Code"].str.endswith("0")].copy()
 
-        # 다음 실행을 위해 저장
-        stocks.to_csv(list_file, index=False)
+        # 다음 실행을 위해 저장 (내용이 같으면 건너뛴다)
+        save_if_changed(stocks, list_file, index=False)
 
         # ----------------------------------------------
         # ② KOSPI 지수
@@ -283,9 +370,11 @@ def prepare_stock_data():
                             ~kospi.index.duplicated(keep="last")
                         ].sort_index()
 
-                except Exception:
+                except Exception as e:
                     # 갱신 실패 시 기존 KOSPI 파일을 계속 사용
-                    pass
+                    logger.warning(
+                        "KOSPI 지수 갱신 실패, 기존 파일을 사용합니다: %s", e
+                    )
 
         # 최근 600일만 유지
         cutoff = pd.Timestamp.today() - pd.Timedelta(days=600)
@@ -294,7 +383,7 @@ def prepare_stock_data():
         if kospi.empty:
             raise RuntimeError("KOSPI 데이터가 없습니다.")
 
-        kospi.to_csv(kospi_file, index_label="Date")
+        save_if_changed(kospi, kospi_file, index_label="Date")
 
         # 전체 시장의 최신 거래일
         market_date = kospi.index[-1].date()
@@ -317,7 +406,7 @@ def prepare_stock_data():
 
                     df.index = pd.to_datetime(df.index)
                     df = df.sort_index()
-                    df.to_csv(stock_file, index_label="Date")
+                    save_if_changed(df, stock_file, index_label="Date")
 
                     stats["신규 다운로드"] += 1
                     continue
@@ -339,7 +428,7 @@ def prepare_stock_data():
 
                     df.index = pd.to_datetime(df.index)
                     df = df.sort_index()
-                    df.to_csv(stock_file, index_label="Date")
+                    save_if_changed(df, stock_file, index_label="Date")
 
                     stats["신규 다운로드"] += 1
                     continue
@@ -374,21 +463,30 @@ def prepare_stock_data():
                 # 최근 600일만 유지
                 df = df[df.index >= cutoff]
 
-                df.to_csv(stock_file, index_label="Date")
+                save_if_changed(df, stock_file, index_label="Date")
                 stats["기존 파일 갱신"] += 1
 
-            except Exception:
+            except Exception as e:
                 # 한 종목 오류가 전체 앱 실행을 막지 않도록 한다.
+                logger.warning("%s 주가 갱신 실패: %s", code, e)
+
                 stats["오류"] += 1
+
+                # 사이드바에 보여 줄 예시 종목코드
+                if len(error_codes) < 5:
+                    error_codes.append(code)
+
                 continue
 
-    # 이 값이 바뀌면 아래 분석용 Streamlit 캐시도 새로 계산된다.
-    data_version = datetime.now().strftime("%Y%m%d%H%M%S")
+    # 파일이 하나도 바뀌지 않으면 이 값도 그대로다.
+    # 그래서 1시간마다 다시 확인해도 계산 결과 캐시는 유지된다.
+    data_version = f"{market_date}-{data_fingerprint()}"
 
     return {
         "market_date": str(market_date),
         "stock_count": len(stocks),
         "stats": stats,
+        "error_codes": error_codes,
         "data_version": data_version,
     }
 
@@ -443,9 +541,22 @@ def load_stocks(data_version):
 
 
 @st.cache_data(show_spinner=False)
-def analyze_stocks(min_value, data_version):
+def compute_metrics(data_version):
+    """
+    모든 KOSPI 종목의 투자 지표를 계산한다.
+
+    사이드바 값(거래대금 기준 등)에는 의존하지 않는다.
+    그래서 슬라이더를 움직여도 이 결과는 캐시에서 그대로 재사용되고,
+    835개 CSV를 다시 읽지 않는다.
+
+    (지표표, 오류정보) 를 돌려준다.
+    """
+
     stocks = load_stocks(data_version)
     rows = []
+
+    # 읽거나 계산하지 못한 종목
+    errors = []
 
     for _, stock in stocks.iterrows():
         code = stock["Code"]
@@ -524,11 +635,10 @@ def analyze_stocks(min_value, data_version):
 
             # ------------------------------------------
             # 기본 필터
+            #
+            # 거래대금 기준은 사이드바에서 바뀌는 값이므로
+            # 여기서 거르지 않고 Value 컬럼으로 내보낸다.
             # ------------------------------------------
-
-            # 거래대금 부족
-            if value < min_value:
-                continue
 
             # 모멘텀 음수
             if momentum <= 0:
@@ -566,11 +676,23 @@ def analyze_stocks(min_value, data_version):
                 }
             )
 
-        except Exception:
-            # 한 종목에서 오류가 발생해도 계속 진행
+        except Exception as e:
+            # 한 종목에서 오류가 발생해도 계속 진행한다.
+            # 다만 조용히 넘기면 '조건을 만족하는 종목이 없습니다' 와
+            # 구분이 되지 않으므로 반드시 기록해 둔다.
+            logger.warning("%s 분석 실패: %s", code, e)
+
+            errors.append(code)
+
             continue
 
-    return pd.DataFrame(rows)
+    error_info = {
+        "count": len(errors),
+        "codes": errors[:5],
+        "total": len(stocks),
+    }
+
+    return pd.DataFrame(rows), error_info
 
 
 # ==================================================
@@ -589,12 +711,17 @@ except Exception as e:
 data_version = data_info["data_version"]
 
 # 캐시 처리 결과를 사이드바에 간단히 표시
-with st.sidebar.expander("주가 데이터 상태"):
+data_status = st.sidebar.expander("주가 데이터 상태")
+
+with data_status:
     st.write("기준일 :", data_info["market_date"])
     st.write("분석 종목 :", data_info["stock_count"])
 
     for label, value in data_info["stats"].items():
         st.write(f"{label} : {value}")
+
+    if data_info["error_codes"]:
+        st.write("갱신 오류 예시 :", ", ".join(data_info["error_codes"]))
 
 
 # ==================================================
@@ -647,7 +774,23 @@ col4.metric("시장 상태", "상승장" if market_up else "하락장")
 # ==================================================
 
 with st.spinner("KOSPI 종목 분석 중..."):
-    result = analyze_stocks(MIN_VALUE, data_version)
+    metrics, analyze_errors = compute_metrics(data_version)
+
+
+# 분석 단계에서 읽지 못한 종목을 사이드바 패널에 덧붙인다.
+# 조용히 넘기면 아래 '조건을 만족하는 종목이 없습니다' 와 구분되지 않는다.
+with data_status:
+    st.write(
+        "분석 오류 :",
+        f"{analyze_errors['count']} / {analyze_errors['total']}",
+    )
+
+    if analyze_errors["codes"]:
+        st.write("분석 오류 예시 :", ", ".join(analyze_errors["codes"]))
+
+
+# 거래대금 필터는 파일을 다시 읽지 않고 계산 결과에만 적용한다.
+result = metrics[metrics["Value"] >= MIN_VALUE].reset_index(drop=True).copy()
 
 
 if result.empty:
@@ -818,27 +961,106 @@ if selected.empty:
 
 
 # ==================================================
-# 19. 매수가
+# 19. 보유 종목 입력 (매수가 / 손절가)
 # ==================================================
 
-# 실제 매수가가 있으면 실제 가격 사용
-# 없으면 현재가 사용
-selected["매수가"] = selected["Code"].map(BUY_PRICE).fillna(selected["Close"])
+# 입력한 값은 종목코드를 기준으로 보관한다.
+# 종목 유형이나 차트 개수를 바꿔 목록이 달라져도 값이 그대로 유지된다.
+positions = st.session_state.setdefault("positions", {})
+
+
+st.markdown("#### 보유 종목 입력")
+
+st.caption(
+    "표의 매수가 칸을 직접 입력하면 그 종목만 실제 매도 단계를 계산합니다. "
+    "손절가를 비워 두면 MA60과 최대 손실률 중 높은 값을 자동으로 사용합니다."
+)
+
+
+# 표에 넣을 값을 세션에서 가져온다.
+editor_df = selected[["Code", "Name", "Close"]].copy()
+
+editor_df["매수가"] = [positions.get(c, {}).get("매수가") for c in editor_df["Code"]]
+
+editor_df["손절가"] = [positions.get(c, {}).get("손절가") for c in editor_df["Code"]]
+
+
+edited = st.data_editor(
+    editor_df,
+    hide_index=True,
+    width="stretch",
+    # 종목 정보는 수정할 수 없다.
+    disabled=["Code", "Name", "Close"],
+    column_config={
+        "Close": st.column_config.NumberColumn("현재가", format="%.0f"),
+        "매수가": st.column_config.NumberColumn(
+            "매수가",
+            min_value=0.0,
+            format="%.0f",
+            help="실제로 매수한 가격. 비워 두면 미보유로 봅니다.",
+        ),
+        "손절가": st.column_config.NumberColumn(
+            "손절가",
+            min_value=0.0,
+            format="%.0f",
+            help="비워 두면 MA60과 최대 손실률 중 높은 값으로 자동 계산합니다.",
+        ),
+    },
+)
+
+
+# 편집한 내용을 세션에 다시 저장한다.
+for code, buy, stop in zip(edited["Code"], edited["매수가"], edited["손절가"]):
+    buy = to_price(buy)
+    stop = to_price(stop)
+
+    if buy is None and stop is None:
+        # 둘 다 지웠으면 보유 목록에서 제거
+        positions.pop(code, None)
+
+    else:
+        positions[code] = {"매수가": buy, "손절가": stop}
 
 
 # ==================================================
-# 20. 손절가
+# 20. 매수가 / 손절가
 # ==================================================
 
-# MA60과 매수가 - 최대손실률 중
-# 더 높은 가격을 사용
+selected["매수가"] = pd.to_numeric(
+    pd.Series(
+        [positions.get(c, {}).get("매수가") for c in selected["Code"]],
+        index=selected.index,
+        dtype="object",
+    ),
+    errors="coerce",
+)
+
+
+# 매수가를 입력한 종목만 보유 종목으로 본다.
+held = selected["매수가"].notna()
+
+
+# 직접 입력한 손절가
+manual_stop = pd.to_numeric(
+    pd.Series(
+        [positions.get(c, {}).get("손절가") for c in selected["Code"]],
+        index=selected.index,
+        dtype="object",
+    ),
+    errors="coerce",
+)
+
+
+# 자동 손절가
+# MA60과 매수가 - 최대손실률 중 더 높은 가격을 사용
 auto_stop = pd.concat(
     [selected["MA60"], selected["매수가"] * (1 - STOP_RATE)], axis=1
 ).max(axis=1)
 
 
 # 직접 입력한 손절가가 있으면 우선 사용
-selected["손절가"] = selected["Code"].map(BUY_STOP).fillna(auto_stop)
+# 매수가가 없는 종목은 손절가도 계산하지 않는다.
+selected["손절가"] = manual_stop.fillna(auto_stop).where(held)
 
 
 # ==================================================
@@ -865,6 +1087,8 @@ price = selected["Close"]
 
 
 sell_conditions = [
+    # 매수가를 입력하지 않음
+    ~held,
     # 손절가 이하
     price <= selected["손절가"],
     # MA60 아래
@@ -880,14 +1104,14 @@ sell_conditions = [
 
 selected["현재단계"] = np.select(
     sell_conditions,
-    ["손절 구간", "추세 이탈", "MA20 이탈", "2R 이상", "1R 이상"],
+    ["미보유", "손절 구간", "추세 이탈", "MA20 이탈", "2R 이상", "1R 이상"],
     default="1R 전",
 )
 
 
 selected["매도신호"] = np.select(
     sell_conditions,
-    ["전량 손절", "매도", "주의", "30% 매도 → 남은 40% MA20 추적", "30% 매도"],
+    ["-", "전량 손절", "매도", "주의", "30% 매도 → 남은 40% MA20 추적", "30% 매도"],
     default="보유",
 )
 
@@ -997,13 +1221,13 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
 
     c1, c2, c3, c4 = st.columns(4)
 
-    show_card(c1, "현재가", f"{row['Close']:,.0f}원")
+    show_card(c1, "현재가", won(row["Close"]))
 
-    show_card(c2, "매수가", f"{row['매수가']:,.0f}원")
+    show_card(c2, "매수가", won(row["매수가"]))
 
-    show_card(c3, "손절가", f"{row['손절가']:,.0f}원")
+    show_card(c3, "손절가", won(row["손절가"]))
 
-    show_card(c4, "1R(30%매도)", f"{row['1R(30%매도)']:,.0f}원")
+    show_card(c4, "1R(30%매도)", won(row["1R(30%매도)"]))
 
     # --------------------------------------------------
     # 두 번째 줄
@@ -1012,7 +1236,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
 
     c5, c6, c7, c8 = st.columns(4)
 
-    show_card(c5, "2R(30%매도)", f"{row['2R(30%매도)']:,.0f}원")
+    show_card(c5, "2R(30%매도)", won(row["2R(30%매도)"]))
 
     show_card(c6, "매수 점수", f"{row['BuyScore']:.1f}점")
 
@@ -1101,6 +1325,9 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
             # 2R
             ("2R(30%매도)", row["2R(30%매도)"], "#C2185B", ":"),
         ]
+
+        # 매수가를 입력하지 않은 종목은 그릴 가격선이 없다.
+        price_lines = [item for item in price_lines if not pd.isna(item[1])]
 
         # 가격선 범례
         price_legend = []
