@@ -20,10 +20,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-
-# import 하는 것만으로 NanumGothic 폰트를 matplotlib에 등록한다.
-# 나눔폰트가 없는 Streamlit Cloud(리눅스)에서 한글이 깨지지 않게 해 준다.
-import koreanize_matplotlib  # noqa: F401
 from matplotlib.lines import Line2D
 import mplfinance as mpf
 import streamlit as st
@@ -104,16 +100,33 @@ PLOT_LOCK = RLock()
 # 4. 한글 폰트
 # ==================================================
 
-# 운영체제에 따라 한글 폰트 선택
-# 리눅스의 NanumGothic은 위에서 import한 koreanize_matplotlib이 등록해 준다.
-font = {"Windows": "Malgun Gothic", "Darwin": "AppleGothic"}.get(
-    platform.system(), "NanumGothic"
-)
+# 저장소에 함께 넣어 둔 나눔고딕을 matplotlib에 등록한다.
+#
+# Streamlit Cloud(리눅스)에는 한글 폰트가 설치되어 있지 않다.
+# 별도 패키지나 apt 설치에 기대면 환경에 따라 실패하므로
+# 폰트 파일을 직접 읽어서 등록한다.
+FONT_FILE = BASE_DIR / "fonts" / "NanumGothic.ttf"
+
+if FONT_FILE.exists():
+    try:
+        fm.fontManager.addfont(str(FONT_FILE))
+
+    except Exception as e:
+        # 폰트 등록에 실패해도 앱은 계속 실행되어야 한다.
+        logger.warning("한글 폰트 등록 실패: %s", e)
+
+else:
+    logger.warning("한글 폰트 파일이 없습니다: %s", FONT_FILE)
 
 # 설치된 폰트 확인
 available_fonts = {f.name for f in fm.fontManager.ttflist}
 
-# 해당 폰트가 없으면 한글이 등록된 NanumGothic으로 대체
+# 운영체제 기본 한글 폰트를 우선 사용
+font = {"Windows": "Malgun Gothic", "Darwin": "AppleGothic"}.get(
+    platform.system(), "NanumGothic"
+)
+
+# 없으면 위에서 등록한 나눔고딕, 그것도 없으면 기본 폰트
 if font not in available_fonts:
     font = "NanumGothic" if "NanumGothic" in available_fonts else "DejaVu Sans"
 
