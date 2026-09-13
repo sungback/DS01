@@ -208,7 +208,17 @@ def to_price(value):
     비어 있거나 숫자가 아니거나 0 이하이면 None(미입력)으로 본다.
     """
 
-    if value is None or pd.isna(value):
+    if value is None:
+        return None
+
+    # 표에서 온 값은 글자다. 쉼표나 원 기호가 섞여 있어도 받아 준다.
+    if isinstance(value, str):
+        value = value.replace(",", "").replace("원", "").strip()
+
+        if not value:
+            return None
+
+    elif pd.isna(value):
         return None
 
     try:
@@ -1130,17 +1140,26 @@ positions = st.session_state.setdefault("positions", {})
 st.markdown("#### 보유 종목 입력")
 
 st.caption(
-    "표의 매수가 칸을 직접 입력하면 그 종목만 실제 매도 단계를 계산합니다. "
+    "매수가 칸을 눌러 실제로 매수한 가격을 입력하세요. "
+    "입력한 종목만 아래에서 실제 매도 단계를 계산합니다. "
     "손절가를 비워 두면 MA60과 최대 손실률 중 높은 값을 자동으로 사용합니다."
 )
 
 
 # 표에 넣을 값을 세션에서 가져온다.
+#
+# 숫자 칸으로 만들면 값이 없을 때 Streamlit 이 "None" 이라는 글자를 그린다.
+# 값처럼 보여서 입력하는 칸이라는 것을 알기 어렵다.
+# 그래서 글자 칸으로 두고 빈 값은 빈 칸으로 보이게 한다.
+# 입력한 글자는 아래에서 to_price 가 숫자로 바꾼다.
 editor_df = selected[["Code", "Name", "Close"]].copy()
 
-editor_df["매수가"] = [positions.get(c, {}).get("매수가") for c in editor_df["Code"]]
-
-editor_df["손절가"] = [positions.get(c, {}).get("손절가") for c in editor_df["Code"]]
+for column in ("매수가", "손절가"):
+    editor_df[column] = [
+        "" if positions.get(c, {}).get(column) is None
+        else f"{positions[c][column]:,.0f}"
+        for c in editor_df["Code"]
+    ]
 
 
 edited = st.data_editor(
@@ -1151,16 +1170,12 @@ edited = st.data_editor(
     disabled=["Code", "Name", "Close"],
     column_config={
         "Close": st.column_config.NumberColumn("현재가", format="%.0f"),
-        "매수가": st.column_config.NumberColumn(
-            "매수가",
-            min_value=0.0,
-            format="%.0f",
-            help="실제로 매수한 가격. 비워 두면 미보유로 봅니다.",
+        "매수가": st.column_config.TextColumn(
+            "매수가 ✏️",
+            help="실제로 매수한 가격을 숫자로 입력하세요. 비워 두면 미보유로 봅니다.",
         ),
-        "손절가": st.column_config.NumberColumn(
-            "손절가",
-            min_value=0.0,
-            format="%.0f",
+        "손절가": st.column_config.TextColumn(
+            "손절가 ✏️",
             help="비워 두면 MA60과 최대 손실률 중 높은 값으로 자동 계산합니다.",
         ),
     },
@@ -1293,7 +1308,17 @@ plan_cols = [
 ]
 
 
-st.dataframe(selected[plan_cols].round(0), width="stretch", hide_index=True)
+# 값이 없는 칸은 "None" 대신 "-" 로 보여 준다.
+# 미보유 종목의 손절가나 1R 자리가 값처럼 읽히지 않게 한다.
+plan_table = selected[plan_cols].copy()
+
+for column in ("Close", "MA20", "MA60", "매수가", "손절가",
+               "1R(30%매도)", "2R(30%매도)"):
+    plan_table[column] = plan_table[column].map(
+        lambda v: "-" if pd.isna(v) else f"{v:,.0f}"
+    )
+
+st.dataframe(plan_table, width="stretch", hide_index=True)
 
 
 # ==================================================
