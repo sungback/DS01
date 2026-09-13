@@ -1597,6 +1597,9 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     rs = candidate.rs_vs_btc_24h
     volume = candidate.volume_ratio
 
+    # BTC 데이터가 없으면 RS를 모른다. 판단은 음수와 같이 보수적으로 두되
+    # 문구에는 '약함'이 아니라 '확인 불가'로 쓴다.
+    rs_unknown = bool(np.isnan(rs))
     rs_positive = rs > 0
     rs_strong = rs >= 2.0
     volume_ok = volume >= 1.0
@@ -1611,7 +1614,9 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     # (1) 시장/구조 리스크를 가장 먼저 본다.
     if regime.startswith("Q1"):
         reasons = ["BTC 시장이 Q1 약세"]
-        if not rs_positive:
+        if rs_unknown:
+            reasons.append("BTC 대비 상대강도 확인 불가")
+        elif not rs_positive:
             reasons.append("BTC 대비 상대강도도 약함")
         if downtrend:
             reasons.append("4시간봉이 LH/LL 하락 구조")
@@ -1621,7 +1626,9 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
 
     if downtrend:
         reasons = ["4시간봉이 LH/LL 하락 구조"]
-        if not rs_positive:
+        if rs_unknown:
+            reasons.append("RS vs BTC 확인 불가")
+        elif not rs_positive:
             reasons.append("RS vs BTC가 음수")
         return result(
             "관망 / 반등 확인",
@@ -1697,7 +1704,9 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     reasons = []
     if swing in {"HH/LL", "LH/HL"}:
         reasons.append(f"Swing 구조가 {swing}로 혼재")
-    if not rs_positive:
+    if rs_unknown:
+        reasons.append("BTC 대비 상대강도 확인 불가")
+    elif not rs_positive:
         reasons.append("BTC 대비 상대강도가 약함")
     if status in {"눌림 대기", "눌림 확인"}:
         reasons.append("진입 신호가 아직 완성되지 않음")

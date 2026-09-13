@@ -72,6 +72,19 @@ check("관망 조언에 혼재 이유 포함", "혼재" in text, text)
 # --- 4) 값이 없을 때 보수적으로 판단 ----------------------------------------
 # BTC 데이터가 없어 RS 를 계산 못 하면 '상대강도 우위' 로 보면 안 된다.
 check("RS NaN → 매수 계열 아님", action(rs_vs_btc_24h=np.nan) == "관망", action(rs_vs_btc_24h=np.nan))
+# 모르는 값을 '약함' · '음수' 로 쓰면 안 된다. 판단은 RS 음수와 똑같이 보수적으로 둔다.
+for label, overrides in [
+    ("기본", {}),
+    ("Q1 약세", {"btc_regime": "Q1 Weak"}),
+    ("LH/LL", {"swing_structure": "LH/LL"}),
+    ("혼재 구조", {"swing_structure": "HH/LL"}),
+]:
+    act_nan, text_nan = app.make_advice(candidate(rs_vs_btc_24h=np.nan, **overrides))
+    act_neg, text_neg = app.make_advice(candidate(rs_vs_btc_24h=-1.0, **overrides))
+    check(f"RS NaN({label}) → '확인 불가' 문구", "확인 불가" in text_nan, text_nan)
+    check(f"RS NaN({label}) → '약함'·'음수' 문구 없음", "약함" not in text_nan and "음수" not in text_nan, text_nan)
+    check(f"RS NaN({label}) 판단 = RS 음수 판단", act_nan == act_neg, (act_nan, act_neg))
+    check(f"RS 음수({label}) → 약함/음수 문구 유지", "약함" in text_neg or "음수" in text_neg, text_neg)
 # BTC 국면을 모르면 강한 시장으로 보지 않는다.
 check("BTC 국면 확인 불가 → 분할매수 아님", action(btc_regime="확인 불가") == "눌림 대기", action(btc_regime="확인 불가"))
 check("스윙 데이터 부족 → 관망", action(swing_structure="데이터 부족") == "관망")
