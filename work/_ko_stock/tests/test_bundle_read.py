@@ -68,12 +68,20 @@ csv_stocks = csv_stocks.reset_index(drop=True)
 assert len(stocks) == len(csv_stocks), "종목 목록 행 수가 다릅니다"
 assert list(stocks["Code"]) == list(csv_stocks["Code"]), "종목코드가 다릅니다"
 
-# dtype 은 값을 고정하지 않고 CSV 경로와 같은지로 확인한다
-assert stocks.dtypes.equals(csv_stocks.dtypes), (
-    f"dtype 이 다릅니다\nCSV : {dict(csv_stocks.dtypes.astype(str))}"
-    f"\nPQ  : {dict(stocks.dtypes.astype(str))}"
-)
-print("종목 목록    : CSV 와 동일 (값·dtype)")
+# 앱이 실제로 쓰는 컬럼만 검사한다.
+#
+# 목록 전체의 dtype 을 CSV 와 비교하지 않는 이유:
+# CSV 왕복은 타입을 뭉갠다. 예를 들어 ChangeCode 는 원본이 문자열 '2','3','1'
+# 인데 CSV 를 거치면 int64 가 되고, Dept 는 전부 결측이라 float64 로 추론된다.
+# parquet 은 fdr 원본 타입을 그대로 보존하므로 오히려 충실하다.
+# CSV 의 손실된 추론을 재현하라고 요구하는 것은 요구사항이 아니다.
+for col in ("Code", "Name"):
+    assert stocks[col].dtype == csv_stocks[col].dtype, (
+        f"{col} dtype 이 다릅니다: {stocks[col].dtype} vs {csv_stocks[col].dtype}"
+    )
+    assert list(stocks[col]) == list(csv_stocks[col]), f"{col} 값이 다릅니다"
+
+print("종목 목록    : Code·Name 값·dtype 동일")
 
 print("\n=== 통과 ===")
 sys.exit(0)

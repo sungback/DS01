@@ -249,34 +249,6 @@ def show_card(column, title, value):
 # ==================================================
 
 
-def save_if_changed(df, path, **kwargs):
-    """
-    내용이 실제로 달라졌을 때만 CSV로 저장한다.
-
-    같은 내용을 그대로 덮어쓰면 파일 수정시각만 바뀐다.
-    그러면 아래 data_fingerprint 값이 매번 달라져
-    화면 계산 결과 캐시가 쓸데없이 버려진다.
-
-    인코딩은 항상 UTF-8로 고정한다.
-    to_csv 의 기본값과 같아야 하고, 윈도우에서 종목명이 깨지지 않는다.
-    """
-
-    text = df.to_csv(**kwargs)
-
-    if path.exists():
-        try:
-            if path.read_text(encoding="utf-8") == text:
-                return False
-
-        except Exception as e:
-            # 읽지 못하면 파일이 깨진 것이므로 새로 쓴다.
-            logger.warning("%s 비교 실패, 새로 저장합니다: %s", path.name, e)
-
-    path.write_text(text, encoding="utf-8")
-
-    return True
-
-
 def save_bundle(df, path):
     """
     번들을 파일로 저장한다.

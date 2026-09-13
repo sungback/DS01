@@ -7,3 +7,4 @@ venv/
 .streamlit/secrets.toml
 .ipynb_checkpoints/
 tests/_scratch/
+stock_data/
