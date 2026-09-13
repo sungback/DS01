@@ -18,6 +18,7 @@ TESTS = [
     "test_screen_entry.py",
     "test_cache_freshness.py",
     "test_pipeline_offline.py",
+    "test_font.py",
 ]
 
 HERE = Path(__file__).resolve().parent

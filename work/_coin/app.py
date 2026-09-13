@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import platform
 import tempfile
 import threading
 import time
@@ -1990,53 +1989,47 @@ MIN_CHART_BARS = 5
 
 
 def configure_korean_font() -> str:
-    """로컬/Streamlit Cloud에서 한글 폰트를 안전하게 등록한다.
+    """로컬과 Streamlit Cloud에 같은 한글 폰트(나눔고딕)를 등록한다.
 
     koreanize-matplotlib 패키지는 직접 import하지 않는다.
     Python 3.13+에서 패키지 내부의 distutils import 오류를 피하면서
-    패키지에 포함된 NanumGothic.ttf 파일만 직접 등록한다.
+    패키지에 포함된 나눔고딕 보통체·굵은체 파일만 직접 등록한다.
+
+    굵은체도 함께 등록해야 Swing 라벨 같은 굵은 글씨가 굵게 그려진다.
+    AppleGothic처럼 굵기가 하나뿐인 글꼴은
+    'findfont: Failed to find font weight bold' 경고를 내고 보통체로 그린다.
     """
+    selected = None
 
-    system = platform.system()
+    # 1) koreanize-matplotlib에 포함된 나눔고딕 보통체·굵은체 (로컬·Cloud 공통)
+    try:
+        dist = distribution("koreanize-matplotlib")
+        font_dir = Path(str(dist.locate_file("koreanize_matplotlib/fonts")))
+        regular = font_dir / "NanumGothic.ttf"
+        if regular.exists():
+            for name in ("NanumGothic.ttf", "NanumGothicBold.ttf"):
+                if (font_dir / name).exists():
+                    fm.fontManager.addfont(str(font_dir / name))
+            selected = fm.FontProperties(fname=str(regular)).get_name()
+    except PackageNotFoundError:
+        log.warning(
+            "koreanize-matplotlib 패키지가 없습니다. "
+            "requirements.txt에 koreanize-matplotlib을 추가하세요."
+        )
+    except Exception as exc:
+        log.warning("나눔고딕 등록 실패: %s", exc)
 
-    # 1) 로컬 OS 기본 한글 폰트 우선
-    preferred = {
-        "Windows": "Malgun Gothic",
-        "Darwin": "AppleGothic",
-    }.get(system)
-
-    available = {font.name for font in fm.fontManager.ttflist}
-    if preferred and preferred in available:
-        selected = preferred
-    else:
-        selected = None
-
-    # 2) Streamlit Cloud(Linux): koreanize-matplotlib을 import하지 않고
-    #    패키지 안의 NanumGothic.ttf만 직접 Matplotlib에 등록
-    if selected is None:
-        try:
-            dist = distribution("koreanize-matplotlib")
-            font_path = Path(
-                str(dist.locate_file("koreanize_matplotlib/fonts/NanumGothic.ttf"))
-            )
-
-            if font_path.exists():
-                fm.fontManager.addfont(str(font_path))
-                selected = fm.FontProperties(fname=str(font_path)).get_name()
-                log.info("NanumGothic 직접 등록: %s", font_path)
-
-        except PackageNotFoundError:
-            log.warning(
-                "koreanize-matplotlib 패키지가 없습니다. "
-                "requirements.txt에 koreanize-matplotlib을 추가하세요."
-            )
-        except Exception as exc:
-            log.warning("NanumGothic 직접 등록 실패: %s", exc)
-
-    # 3) 이미 시스템에 설치된 한글 폰트가 있으면 사용
+    # 2) 패키지가 없으면 설치된 한글 폰트 중 굵은체가 있는 것부터 사용
     if selected is None:
         available = {font.name for font in fm.fontManager.ttflist}
-        for name in ("NanumGothic", "NanumBarunGothic", "Noto Sans CJK KR"):
+        for name in (
+            "NanumGothic",
+            "Malgun Gothic",
+            "Apple SD Gothic Neo",
+            "AppleGothic",
+            "NanumBarunGothic",
+            "Noto Sans CJK KR",
+        ):
             if name in available:
                 selected = name
                 break
