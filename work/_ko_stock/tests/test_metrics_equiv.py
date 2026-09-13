@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from conftest_paths import APP, DATA_FOLDER, LIST_FILE, BUNDLE_FILE, PROJECT, SCRATCH
+from conftest_paths import (APP, BUNDLE_FILE, DATA_FOLDER, INDEX_FILE,
+                            LIST_FILE, PROJECT, SCRATCH)
 
 PROJECT = PROJECT
 DATA_FOLDER = PROJECT / "stock_data"
@@ -31,7 +32,8 @@ def extract(path, names):
         n.decorator_list = []
 
     import logging
-    ns = {"pd": pd, "DATA_FOLDER": DATA_FOLDER,
+    ns = {"pd": pd, "DATA_FOLDER": DATA_FOLDER, "BUNDLE_FILE": BUNDLE_FILE,
+          "INDEX_FILE": INDEX_FILE, "LIST_FILE": LIST_FILE,
           "logger": logging.getLogger("test")}
     exec(compile(ast.Module(body=wanted, type_ignores=[]), path, "exec"), ns)
     return ns

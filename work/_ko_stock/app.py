@@ -373,7 +373,7 @@ def build_index_from_csv():
 
 def data_fingerprint():
     """
-    stock_data 폴더 상태를 짧은 글자로 요약한다.
+    주가 번들의 상태를 짧은 글자로 요약한다.
 
     파일이 하나도 바뀌지 않으면 같은 값이 나온다.
     이 값을 캐시 키로 쓰면 데이터가 그대로일 때 캐시가 유지된다.
@@ -381,9 +381,13 @@ def data_fingerprint():
 
     parts = []
 
-    for f in sorted(DATA_FOLDER.glob("*.csv")):
-        info = f.stat()
-        parts.append(f"{f.name}:{info.st_size}:{info.st_mtime_ns}")
+    for file in (BUNDLE_FILE, INDEX_FILE, LIST_FILE):
+        if not file.exists():
+            parts.append(f"{file.name}:없음")
+            continue
+
+        info = file.stat()
+        parts.append(f"{file.name}:{info.st_size}:{info.st_mtime_ns}")
 
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
 
@@ -623,19 +627,44 @@ def prepare_stock_data():
 
 
 @st.cache_data(show_spinner=False)
+def load_bundle(data_version):
+    """
+    주가 번들을 읽어 종목코드별 표로 나눠 돌려준다.
+
+    돌려주는 표의 모양은 예전에 종목별 CSV 를 읽었을 때와 같다.
+    Date 를 인덱스로 하고 Open/High/Low/Close/Volume/Change 컬럼을 가진다.
+
+    종목별로 나누면서 Code 컬럼은 버린다.
+    문자열이 중복 저장되지 않고, 소비 함수들이 예전과 같은 표를 받는다.
+    """
+
+    # data_version 은 데이터가 갱신되었을 때 캐시를 무효화하기 위한 값
+    _ = data_version
+
+    bundle = pd.read_parquet(BUNDLE_FILE)
+
+    groups = {}
+
+    for code, part in bundle.groupby("Code", observed=True):
+        groups[str(code)] = (
+            part.drop(columns="Code")
+            .set_index("Date")
+            .sort_index()
+        )
+
+    return groups
+
+
+@st.cache_data(show_spinner=False)
 def load_market(data_version):
     """KOSPI 지수 읽기"""
 
     # data_version은 파일이 갱신되었을 때 캐시를 무효화하기 위한 값
     _ = data_version
 
-    df = pd.read_csv(
-        DATA_FOLDER / "KS11.csv",
-        index_col="Date",
-        parse_dates=["Date"],
-    )
+    df = pd.read_parquet(INDEX_FILE)
 
-    return df.sort_index()
+    return df.set_index("Date").sort_index()
 
 
 @st.cache_data(show_spinner=False)
@@ -644,10 +673,7 @@ def load_stocks(data_version):
 
     _ = data_version
 
-    df = pd.read_csv(
-        DATA_FOLDER / "KOSPI_list.csv",
-        dtype={"Code": str},
-    )
+    df = pd.read_parquet(LIST_FILE)
 
     # 종목코드를 6자리 문자열로 변경
     # 예: 5930 → 005930

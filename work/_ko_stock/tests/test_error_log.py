@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from conftest_paths import APP, DATA_FOLDER, LIST_FILE, BUNDLE_FILE, PROJECT, SCRATCH
+from conftest_paths import (APP, BUNDLE_FILE, DATA_FOLDER, INDEX_FILE,
+                            LIST_FILE, PROJECT, SCRATCH)
 
 PROJECT = PROJECT
 APP = PROJECT / "app.py"
@@ -23,7 +24,9 @@ fns = [n for n in tree.body
 for n in fns:
     n.decorator_list = []
 
-ns = {"pd": pd, "DATA_FOLDER": DATA_FOLDER, "logger": logging.getLogger("app")}
+ns = {"pd": pd, "DATA_FOLDER": DATA_FOLDER, "BUNDLE_FILE": BUNDLE_FILE,
+      "INDEX_FILE": INDEX_FILE, "LIST_FILE": LIST_FILE,
+      "logger": logging.getLogger("app")}
 exec(compile(ast.Module(body=fns, type_ignores=[]), str(APP), "exec"), ns)
 
 # 깨진 파일 3개를 임시로 만든다 (실제 종목코드 중 앞 3개 사용)
