@@ -84,6 +84,24 @@ DATA_FOLDER = BASE_DIR / "stock_data"
 # 폴더가 없으면 자동 생성
 DATA_FOLDER.mkdir(parents=True, exist_ok=True)
 
+# 앱이 읽고 쓰는 주가 번들
+# 종목당 CSV 를 따로 두지 않고 한 파일로 모은다.
+BUNDLE_FILE = BASE_DIR / "stock_data.parquet"
+INDEX_FILE = BASE_DIR / "kospi_index.parquet"
+LIST_FILE = BASE_DIR / "kospi_list.parquet"
+
+# 번들 컬럼 순서
+BUNDLE_COLUMNS = [
+    "Code",
+    "Date",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Change",
+]
+
 # 파일 캐시 확인 주기: 1시간
 DATA_REFRESH_SECONDS = 60 * 60
 
@@ -257,6 +275,100 @@ def save_if_changed(df, path, **kwargs):
     path.write_text(text, encoding="utf-8")
 
     return True
+
+
+def save_bundle(df, path):
+    """
+    번들을 파일로 저장한다.
+
+    임시 파일에 먼저 쓰고 마지막에 교체한다.
+    저장 도중 멈춰도 기존 파일이 깨지지 않는다.
+    """
+
+    temp = path.with_name(path.name + ".tmp")
+
+    df.to_parquet(temp, compression="zstd", index=False)
+
+    temp.replace(path)
+
+
+def build_bundle_from_csv():
+    """
+    stock_data 폴더의 CSV 를 모아 번들 형식으로 만든다.
+
+    예전 방식으로 받아 둔 CSV 가 있는 환경에서
+    번들을 처음 만들 때 쓴다.
+
+    KOSPI 지수(KS11)는 OHLC 가 소수점을 가져 dtype 이 다르다.
+    같은 표에 담으면 개별 종목의 int64 가 float64 로 바뀌므로
+    여기서 제외하고 build_index_from_csv 로 따로 만든다.
+
+    CSV 가 하나도 없으면 None 을 돌려준다.
+    """
+
+    frames = []
+
+    for file in sorted(DATA_FOLDER.glob("*.csv")):
+        # 종목 목록과 지수는 개별 종목이 아니므로 제외
+        if file.stem in ("KOSPI_list", "KS11"):
+            continue
+
+        try:
+            df = pd.read_csv(
+                file, index_col="Date", parse_dates=["Date"]
+            ).sort_index()
+
+        except Exception as e:
+            logger.warning("%s 읽기 실패, 건너뜁니다: %s", file.name, e)
+            continue
+
+        if df.empty:
+            continue
+
+        df = df.reset_index()
+
+        # 파일 이름이 곧 종목코드
+        df["Code"] = file.stem
+
+        frames.append(df)
+
+    if not frames:
+        return None
+
+    bundle = pd.concat(frames, ignore_index=True)
+
+    return (
+        bundle[BUNDLE_COLUMNS]
+        .sort_values(["Code", "Date"])
+        .reset_index(drop=True)
+    )
+
+
+def build_index_from_csv():
+    """
+    stock_data/KS11.csv 를 읽어 KOSPI 지수 표로 만든다.
+
+    파일이 없으면 None 을 돌려준다.
+    """
+
+    file = DATA_FOLDER / "KS11.csv"
+
+    if not file.exists():
+        return None
+
+    try:
+        df = pd.read_csv(
+            file, index_col="Date", parse_dates=["Date"]
+        ).sort_index()
+
+    except Exception as e:
+        logger.warning("KS11.csv 읽기 실패: %s", e)
+        return None
+
+    if df.empty:
+        return None
+
+    return df
 
 
 def data_fingerprint():

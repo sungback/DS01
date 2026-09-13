@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 TESTS = [
+    "test_bundle_build.py",
     "test_metrics_equiv.py",
     "test_sell_stage.py",
     "test_error_log.py",

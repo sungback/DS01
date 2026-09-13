@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 종목당 CSV 835개를 커밋하던 방식을 parquet 번들 2개로 바꿔, 데이터 갱신이 저장소와 코드 이력을 오염시키지 않게 한다.
+**Goal:** 종목당 CSV 835개를 커밋하던 방식을 parquet 번들 3개로 바꿔, 데이터 갱신이 저장소와 코드 이력을 오염시키지 않게 한다.
 
-**Architecture:** 앱은 `stock_data.parquet`(전 종목 OHLCV)과 `kospi_list.parquet`(종목 목록)만 읽고 쓴다. `load_bundle()`이 번들을 **종목코드 → DataFrame 사전**으로 풀어 캐시하므로, 기존 CSV 경로가 만들던 표와 모양이 같아 소비 함수들의 계산 로직은 그대로 둔다. `stock_data/*.csv`는 노트북 실습용 로컬 캐시로 남기고 git 추적에서 뺀다.
+**Architecture:** 앱은 `stock_data.parquet`(개별 종목 OHLCV), `kospi_index.parquet`(KOSPI 지수), `kospi_list.parquet`(종목 목록)만 읽고 쓴다. `load_bundle()`이 번들을 **종목코드 → DataFrame 사전**으로 풀어 캐시하므로, 기존 CSV 경로가 만들던 표와 모양이 같아 소비 함수들의 계산 로직은 그대로 둔다. `stock_data/*.csv`는 노트북 실습용 로컬 캐시로 남기고 git 추적에서 뺀다.
 
 **Tech Stack:** Python 3.13 / pandas 3.0.5 / pyarrow 24 (streamlit의 직접 의존성) / streamlit 1.61.1 / mplfinance
 
@@ -21,10 +21,12 @@
   /Users/back/.local/bin/uv pip install \
       --python tests/_scratch/venv313/bin/python -r requirements.txt
   ```
-- 번들 파일 경로는 `BASE_DIR / "stock_data.parquet"`, `BASE_DIR / "kospi_list.parquet"`. `BASE_DIR` 는 app.py가 있는 폴더.
+- 번들 파일 경로는 `BASE_DIR / "stock_data.parquet"`, `BASE_DIR / "kospi_index.parquet"`, `BASE_DIR / "kospi_list.parquet"`. `BASE_DIR` 는 app.py가 있는 폴더.
 - 번들 컬럼 순서는 항상 `["Code", "Date", "Open", "High", "Low", "Close", "Volume", "Change"]`.
 - 압축은 zstd, `index=False` 로 저장한다.
-- OHLCV dtype은 int64, `Change` 는 float64, `Date` 는 datetime64[us] 를 유지한다. (CSV 경로와 parquet 왕복이 dtype·값 모두 일치함을 확인함)
+- 개별 종목 OHLCV dtype은 int64, `Change` 는 float64, `Date` 는 datetime64[us] 를 유지한다.
+- **KOSPI 지수(KS11)는 개별 종목과 같은 표에 담지 않는다.** 지수만 OHLC 가 float64 라
+  한 표로 합치면 833개 종목의 int64 가 float64 로 끌어올려진다. `kospi_index.parquet` 에 따로 둔다.
 - 보관 범위는 최근 600일. 기존과 같다.
 - 데이터가 실제로 바뀌지 않았으면 번들 파일을 다시 쓰지 않는다. 파일 수정시각이 바뀌면 `data_fingerprint()` 가 달라져 계산 캐시가 통째로 버려진다.
 - 계산 결과와 차트 그림은 전환 전후가 같아야 한다. 기준을 낮추려면 사유를 설계 문서에 남긴다.
@@ -44,7 +46,8 @@
 | `tests/` (신규) | 지금까지 임시 폴더에 있던 검증 스크립트를 저장소로 옮긴 곳 |
 | `tests/run_all.py` (신규) | 전체 테스트 실행기. 하나의 명령으로 합격/불합격 판정 |
 | `tests/conftest_paths.py` (신규) | 프로젝트 경로 상수. 각 테스트가 공유 |
-| `stock_data.parquet` (신규, 커밋) | 전 종목 OHLCV |
+| `stock_data.parquet` (신규, 커밋) | 개별 종목 OHLCV (833개) |
+| `kospi_index.parquet` (신규, 커밋) | KOSPI 지수 OHLCV |
 | `kospi_list.parquet` (신규, 커밋) | 종목 목록 |
 | `.gitignore` (수정) | `stock_data/` 추가 |
 | `requirements.txt` (수정) | `pyarrow` 명시 고정 |
@@ -81,6 +84,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 APP = PROJECT / "app.py"
 DATA_FOLDER = PROJECT / "stock_data"
 BUNDLE_FILE = PROJECT / "stock_data.parquet"
+INDEX_FILE = PROJECT / "kospi_index.parquet"
 LIST_FILE = PROJECT / "kospi_list.parquet"
 
 # 테스트가 만드는 임시 산출물 (git 추적 안 함)
@@ -207,9 +211,10 @@ CSV에서 번들을 만드는 함수와, 원자적으로 저장하는 함수를 
 
 **Interfaces:**
 - Produces: `BUNDLE_COLUMNS: list[str]` — 번들 컬럼 순서
-- Produces: `BUNDLE_FILE: Path`, `LIST_FILE: Path`
+- Produces: `BUNDLE_FILE: Path`, `INDEX_FILE: Path`, `LIST_FILE: Path`
+- Produces: `build_index_from_csv() -> pd.DataFrame | None` — `stock_data/KS11.csv` 를 읽어 지수 표로. 없으면 `None`
 - Produces: `save_bundle(df: pd.DataFrame, path: Path) -> None` — 임시 파일에 쓴 뒤 교체
-- Produces: `build_bundle_from_csv() -> pd.DataFrame | None` — `stock_data/*.csv` 를 모아 번들 형식으로. CSV가 하나도 없으면 `None`
+- Produces: `build_bundle_from_csv() -> pd.DataFrame | None` — `stock_data/*.csv` 에서 `KOSPI_list.csv` 와 `KS11.csv` 를 뺀 나머지를 모아 번들 형식으로. CSV가 하나도 없으면 `None`
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
@@ -435,7 +440,7 @@ EOF
 > 같은 목적(문자열 중복 제거)을 더 확실히 달성하고, 덤으로 소비 함수들이
 > 기존 CSV 경로와 똑같은 표를 받게 되어 계산 로직을 건드리지 않아도 된다.
 > category 변환은 하지 않는다.
-- Produces: `data_fingerprint()` — 시그니처 그대로. 내부만 번들 2개 기준으로 바뀜
+- Produces: `data_fingerprint()` — 시그니처 그대로. 내부만 번들 3개 기준으로 바뀜
 
 - [ ] **Step 1: 번들 파일을 만든다**
 
@@ -1358,7 +1363,7 @@ git add -A work/_ko_stock
 git commit -m "$(cat <<'EOF'
 주가 CSV 추적 해제, save_if_changed 제거
 
-stock_data/ 를 gitignore 로 옮기고 번들 2개만 커밋한다.
+stock_data/ 를 gitignore 로 옮기고 번들 3개만 커밋한다.
 로컬 CSV 는 노트북 실습용으로 그대로 남는다.
 CSV 경로가 사라져 save_if_changed 는 더 이상 쓰이지 않는다.
 pyarrow 를 requirements 에 명시한다.
