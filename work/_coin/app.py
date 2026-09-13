@@ -1,7 +1,7 @@
 """업비트 코인 분석기 v17 — 4시간봉 추세 선별 + 1시간봉 진입 타이밍.
 
 실행:
-    pip install streamlit pandas numpy requests matplotlib mplfinance
+    pip install -r requirements.txt
     streamlit run app.py
 
 구성 (위에서 아래로 한 방향 의존):

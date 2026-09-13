@@ -1,0 +1,7 @@
+# archive/ 의 노트북·비교본 앱 실행용 추가 패키지.
+# 먼저 상위 폴더의 requirements.txt 를 설치한 뒤 이 파일을 설치한다.
+#   pip install -r ../requirements.txt -r requirements-notebooks.txt
+# (Streamlit Cloud 는 app.py 옆의 requirements.txt 만 쓰므로 이 파일과 무관하다)
+pyupbit==0.2.33
+tqdm==4.67.1
+ipywidgets==8.1.8
