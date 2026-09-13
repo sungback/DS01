@@ -35,6 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -113,6 +114,30 @@ RUNNER_TRAIL_ATR_MULT = 1.5  # 4R 이후 강화 Trail
 TP1_SELL_PCT = 30
 TP2_SELL_PCT = 30
 RUNNER_HOLD_PCT = 40
+
+# --- 업비트 원화 마켓 호가 단위 (가격 구간 하한 이상 → 호가 단위) ---
+# 출처: docs.upbit.com/kr/docs/krw-market-info (2025-07-31 개편).
+# 2026-09-13 원화 마켓 288개 전 종목의 /v1/orderbook/instruments tick_size와 일치 확인.
+# 업비트가 정책을 바꾸면 그 API가 기준이다.
+KRW_TICK_SIZES = (
+    ("2000000", "1000"),
+    ("1000000", "1000"),
+    ("500000", "500"),
+    ("100000", "100"),
+    ("50000", "50"),
+    ("10000", "10"),
+    ("5000", "5"),
+    ("1000", "1"),
+    ("100", "1"),
+    ("10", "0.1"),
+    ("1", "0.01"),
+    ("0.1", "0.001"),
+    ("0.01", "0.0001"),
+    ("0.001", "0.00001"),
+    ("0.0001", "0.000001"),
+    ("0.00001", "0.0000001"),
+    ("0", "0.00000001"),
+)
 
 # --- 유동성 점수 구간 (거래대금 하한 → 점수) ---
 LIQUIDITY_TIERS = ((10_000_000_000, 4.0), (3_000_000_000, 3.0), (1_000_000_000, 2.0))
@@ -227,6 +252,45 @@ def safe_float(value, default: float = np.nan) -> float:
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
+
+
+# ------------------------------------------------------------
+# 호가 단위
+# ------------------------------------------------------------
+_KRW_TICKS = tuple((Decimal(floor), Decimal(tick)) for floor, tick in KRW_TICK_SIZES)
+
+
+def _price_decimal(value: float) -> Decimal:
+    """계산 중 생긴 0.30000000000000004 같은 오차를 12자리에서 걷어낸다."""
+    return Decimal(f"{value:.12g}")
+
+
+def _krw_tick(price: Decimal) -> Decimal:
+    for floor, tick in _KRW_TICKS:
+        if price >= floor:
+            return tick
+    return _KRW_TICKS[-1][1]
+
+
+def krw_tick_size(price: float) -> float:
+    """업비트 원화 마켓에서 이 가격에 적용되는 호가 단위."""
+    return float(_krw_tick(_price_decimal(price)))
+
+
+def round_to_tick(price: float, direction: str) -> float:
+    """가격을 그 가격대 호가 단위의 배수로 내림("down") 또는 올림("up")한다.
+
+    구간 경계(5,000원 · 10,000원 등)는 윗 구간 호가 단위의 배수이므로
+    올림이 경계에 닿아도 주문 가능한 가격이 된다.
+    """
+    if direction not in ("down", "up"):
+        raise ValueError(f"direction은 'down' 또는 'up'이어야 합니다: {direction!r}")
+    if np.isnan(price):
+        return price
+    value = _price_decimal(price)
+    tick = _krw_tick(value)
+    mode = ROUND_FLOOR if direction == "down" else ROUND_CEILING
+    return float((value / tick).to_integral_value(rounding=mode) * tick)
 
 
 # ------------------------------------------------------------
@@ -1477,6 +1541,8 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
     - 2차 30%    : +2.5R, 이후 마지막 40%에 MA20 - 2 ATR Trail 적용
     - 마지막 40% : Runner로 유지하고 +4R부터 Trail을 1.5 ATR로 강화
     - 포지션     : 계좌자금 × 거래당 허용위험 ÷ 1개당 손절위험, 종목 비중으로 재한도
+    - 호가 단위  : 사는 가격·손절·Trail은 내림, 익절·Runner 기준은 올림
+                   (손절폭·수량·위험은 반올림한 가격으로 계산)
     """
     entry = candidate.entry
     price, ma20, ma60, atr = candidate.price, entry.ma20, entry.ma60, entry.atr
@@ -1484,25 +1550,31 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
     if np.isnan([price, ma20, ma60, atr]).any() or price <= 0 or ma20 <= 0 or atr <= 0:
         return TradePlan(atr=atr)
 
-    zone_low = max(0.0, ma20 - BUY_ZONE_ATR * atr)
-    zone_high = ma20 + BUY_ZONE_ATR * atr
+    raw_zone_low = max(0.0, ma20 - BUY_ZONE_ATR * atr)
+    raw_zone_high = ma20 + BUY_ZONE_ATR * atr
 
     # 계획 진입가: 구간 위면 상단, 구간 아래면 MA20 바로 위, 구간 안이면 현재가
-    if price > zone_high:
-        reference = zone_high
-    elif price < zone_low:
+    if price > raw_zone_high:
+        reference = raw_zone_high
+    elif price < raw_zone_low:
         reference = ma20 + 0.10 * atr
     else:
         reference = price
 
+    # 주문 가능한 가격으로 맞춘다. 사는 가격은 내림: 계획보다 비싸게 사지 않는다.
+    zone_low = round_to_tick(raw_zone_low, "down")
+    zone_high = round_to_tick(raw_zone_high, "down")
+    reference = round_to_tick(reference, "down")
+
     stop = min(
         max(ma60 - STOP_MA60_ATR * atr, reference - MAX_STOP_ATR * atr),
-        zone_low - 0.25 * atr,
+        raw_zone_low - 0.25 * atr,
     )
     # 손절폭이 지나치게 좁아지지 않게 최소폭을 보장한다.
     if reference - stop < MIN_RISK_ATR * atr:
         stop = reference - MIN_RISK_ATR * atr
-    stop = max(0.0, stop)
+    # 손절도 내림: 계산한 손절선보다 위에서 끊지 않는다. 넓어진 손절폭만큼 수량이 줄어든다.
+    stop = round_to_tick(max(0.0, stop), "down")
 
     risk = reference - stop
     if risk <= 0:
@@ -1518,9 +1590,14 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
         )
 
     breakeven = reference
-    trail_normal = max(breakeven, ma20 - TRAIL_ATR_MULT * atr)
-    trail_tight = max(breakeven, ma20 - RUNNER_TRAIL_ATR_MULT * atr)
-    runner_trigger = reference + RUNNER_TRIGGER_R * risk
+    trail_normal = max(breakeven, round_to_tick(ma20 - TRAIL_ATR_MULT * atr, "down"))
+    trail_tight = max(
+        breakeven, round_to_tick(ma20 - RUNNER_TRAIL_ATR_MULT * atr, "down")
+    )
+    # 익절은 올림: 계획한 R 배수보다 작은 이익에서 팔지 않는다.
+    take_profit_1 = round_to_tick(reference + TP1_R * risk, "up")
+    take_profit_2 = round_to_tick(reference + TP2_R * risk, "up")
+    runner_trigger = round_to_tick(reference + RUNNER_TRIGGER_R * risk, "up")
     in_runner = price >= runner_trigger
 
     # 리스크 기반 포지션 사이징
@@ -1541,8 +1618,8 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
         stop_price=stop,
         risk_per_unit=risk,
         risk_pct=risk / reference * 100,
-        take_profit_1=reference + TP1_R * risk,
-        take_profit_2=reference + TP2_R * risk,
+        take_profit_1=take_profit_1,
+        take_profit_2=take_profit_2,
         runner_trigger_4r=runner_trigger,
         breakeven_stop=breakeven,
         trailing_stop_normal=trail_normal,

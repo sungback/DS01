@@ -12,6 +12,7 @@ from pathlib import Path
 TESTS = [
     "test_indicators.py",
     "test_score.py",
+    "test_tick_size.py",
     "test_trade_plan.py",
     "test_advice.py",
     "test_screen_entry.py",

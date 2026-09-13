@@ -6,6 +6,7 @@
 import logging
 import sys
 import warnings
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +61,12 @@ def make_candles(closes, unit: int, end=None, spread: float = 0.003) -> pd.DataF
 def geometric(n: int, step: float, start: float = 100.0) -> np.ndarray:
     """봉마다 step 비율로 변하는 매끄러운 종가."""
     return start * (1 + step) ** np.arange(n)
+
+
+def on_tick(price: float) -> bool:
+    """가격이 그 가격대의 업비트 원화 호가 단위의 배수인지."""
+    value = Decimal(f"{price:.12g}")
+    return value % Decimal(str(app.krw_tick_size(price))) == 0
 
 
 # ------------------------------------------------------------
