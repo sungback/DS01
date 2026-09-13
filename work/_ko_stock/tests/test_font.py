@@ -18,7 +18,6 @@ import matplotlib.pyplot as plt
 
 from conftest_paths import APP, DATA_FOLDER, LIST_FILE, BUNDLE_FILE, PROJECT, SCRATCH
 
-PROJECT = PROJECT
 BUNDLED = PROJECT / "fonts" / "NanumGothic.ttf"
 
 # ① Cloud 와 같게: 시스템에 설치된 한글 폰트를 모두 없앤 상태로 만든다

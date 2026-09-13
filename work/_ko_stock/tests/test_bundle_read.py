@@ -1,6 +1,9 @@
 """load_bundle 이 CSV 경로와 같은 모양의 표를 돌려주는지 확인."""
 
-from conftest_paths import APP, BUNDLE_FILE, DATA_FOLDER, INDEX_FILE, LIST_FILE
+from conftest_paths import (APP, BUNDLE_FILE, INDEX_FILE, LIST_FILE,
+                            csv_source, has_real_csv)
+
+DATA_FOLDER = csv_source()
 
 import ast
 import logging
@@ -32,6 +35,8 @@ def load_funcs(names):
 ns = load_funcs(["load_bundle", "load_market", "load_stocks"])
 
 groups = ns["load_bundle"]("v")
+print("CSV 출처     :", DATA_FOLDER.name,
+      "(진짜 CSV)" if has_real_csv() else "(번들에서 생성)")
 print("번들 종목 수 :", len(groups))
 assert len(groups) > 800, "종목 수가 너무 적습니다"
 

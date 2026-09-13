@@ -1,6 +1,8 @@
 """번들 빌더가 CSV 내용을 손실 없이 옮기는지 확인."""
 
-from conftest_paths import APP, DATA_FOLDER, PROJECT
+from conftest_paths import APP, PROJECT, csv_source, has_real_csv
+
+DATA_FOLDER = csv_source()
 
 import ast
 import logging
@@ -34,6 +36,8 @@ bundle = ns["build_bundle_from_csv"]()
 
 assert bundle is not None, "번들이 만들어지지 않았습니다"
 
+print("CSV 출처  :", DATA_FOLDER.name,
+      "(진짜 CSV)" if has_real_csv() else "(번들에서 생성)")
 print("컬럼 순서 :", list(bundle.columns))
 assert list(bundle.columns) == BUNDLE_COLUMNS, "컬럼 순서가 다릅니다"
 

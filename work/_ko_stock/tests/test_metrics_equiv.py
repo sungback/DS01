@@ -11,11 +11,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from conftest_paths import (APP, BUNDLE_FILE, DATA_FOLDER, INDEX_FILE,
-                            LIST_FILE, PROJECT, SCRATCH)
+from conftest_paths import (APP, BUNDLE_FILE, INDEX_FILE, LIST_FILE,
+                            PROJECT, SCRATCH, csv_source, has_real_csv)
 
-PROJECT = PROJECT
-DATA_FOLDER = PROJECT / "stock_data"
+DATA_FOLDER = csv_source()
 
 
 def extract(path, names):

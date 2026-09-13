@@ -5,7 +5,9 @@
 네트워크를 쓰지 않도록 fdr 을 가짜로 바꿔치기한다.
 """
 
-from conftest_paths import APP, DATA_FOLDER, SCRATCH
+from conftest_paths import APP, SCRATCH, csv_source, has_real_csv
+
+DATA_FOLDER = csv_source()
 
 import ast
 import hashlib
@@ -75,6 +77,8 @@ ns = load_prepare(work)
 info1 = ns["prepare_stock_data"]()
 made = [(work / n).exists() for n in
         ("stock_data.parquet", "kospi_index.parquet", "kospi_list.parquet")]
+print("CSV 출처 :", DATA_FOLDER.name,
+      "(진짜 CSV)" if has_real_csv() else "(번들에서 생성)")
 print("① 번들 3개 자동 생성 :", made)
 assert all(made), "번들이 만들어지지 않았습니다"
 print("   기준일 :", info1["market_date"], "| 종목 :", info1["stock_count"])
