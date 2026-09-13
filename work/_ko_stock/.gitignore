@@ -6,3 +6,4 @@ venv/
 .env
 .streamlit/secrets.toml
 .ipynb_checkpoints/
+tests/_scratch/
