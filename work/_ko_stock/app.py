@@ -400,9 +400,9 @@ def data_fingerprint():
 @st.cache_data(ttl=DATA_REFRESH_SECONDS, show_spinner=False)
 def prepare_stock_data():
     """
-    stock_data 폴더의 파일을 확인한다.
+    주가 번들을 확인하고 필요한 만큼만 갱신한다.
 
-    - KOSPI 종목 목록이 없으면 새로 저장
+    - 번들이 없으면 예전 CSV 에서 만들거나 새로 내려받는다
     - KOSPI 지수와 개별 종목이 오래되었으면 부족한 날짜만 갱신
     - 이미 최신이면 다운로드 생략
     """
@@ -422,21 +422,21 @@ def prepare_stock_data():
         # ----------------------------------------------
         # ① KOSPI 종목 목록
         # ----------------------------------------------
-        list_file = DATA_FOLDER / "KOSPI_list.csv"
-
         try:
             stocks = fdr.StockListing("KOSPI")
 
         except Exception as e:
             # 인터넷 오류 시 기존 목록 사용
-            logger.warning("KOSPI 종목 목록 조회 실패, 저장된 목록을 사용합니다: %s", e)
+            logger.warning(
+                "KOSPI 종목 목록 조회 실패, 저장된 목록을 사용합니다: %s", e
+            )
 
-            if not list_file.exists():
+            if not LIST_FILE.exists():
                 raise RuntimeError(
-                    "KOSPI 종목 목록을 받지 못했고 저장된 KOSPI_list.csv도 없습니다."
+                    "KOSPI 종목 목록을 받지 못했고 저장된 목록도 없습니다."
                 )
 
-            stocks = pd.read_csv(list_file, dtype={"Code": str})
+            stocks = pd.read_parquet(LIST_FILE)
 
         # 종목코드를 6자리 문자열로 통일
         stocks["Code"] = (
@@ -447,17 +447,69 @@ def prepare_stock_data():
         )
 
         # 일반 종목만 사용
-        stocks = stocks[stocks["Code"].str.endswith("0")].copy()
+        stocks = stocks[stocks["Code"].str.endswith("0")].reset_index(drop=True)
 
-        # 다음 실행을 위해 저장 (내용이 같으면 건너뛴다)
-        save_if_changed(stocks, list_file, index=False)
+        # 목록이 달라졌을 때만 저장한다.
+        # 같은 내용을 다시 쓰면 수정시각이 바뀌어 캐시가 버려진다.
+        list_changed = True
+
+        if LIST_FILE.exists():
+            try:
+                list_changed = not pd.read_parquet(LIST_FILE).equals(stocks)
+
+            except Exception as e:
+                logger.warning("종목 목록 비교 실패, 새로 저장합니다: %s", e)
+
+        if list_changed:
+            save_bundle(stocks, LIST_FILE)
 
         # ----------------------------------------------
-        # ② KOSPI 지수
+        # ② 번들 적재
         # ----------------------------------------------
-        kospi_file = DATA_FOLDER / "KS11.csv"
+        bundle = None
 
-        if not kospi_file.exists():
+        if BUNDLE_FILE.exists():
+            try:
+                bundle = pd.read_parquet(BUNDLE_FILE)
+
+            except Exception as e:
+                # 번들이 깨졌으면 CSV 에서 복구를 시도한다
+                logger.warning("번들을 읽지 못했습니다, 다시 만듭니다: %s", e)
+
+        if bundle is None:
+            # 예전 방식으로 받아 둔 CSV 가 있으면 거기서 만든다
+            bundle = build_bundle_from_csv()
+
+        if bundle is None:
+            bundle = pd.DataFrame(columns=BUNDLE_COLUMNS)
+
+        # 종목코드별로 나눠 둔다
+        frames = {
+            str(code): part.drop(columns="Code").set_index("Date").sort_index()
+            for code, part in bundle.groupby("Code", observed=True)
+        }
+
+        # 번들을 새로 만들었으면 저장이 필요하다
+        changed = not BUNDLE_FILE.exists()
+
+        # ----------------------------------------------
+        # ③ KOSPI 지수
+        # ----------------------------------------------
+        kospi = None
+        index_existed = INDEX_FILE.exists()
+
+        if index_existed:
+            try:
+                kospi = pd.read_parquet(INDEX_FILE).set_index("Date").sort_index()
+
+            except Exception as e:
+                logger.warning("KOSPI 지수를 읽지 못했습니다: %s", e)
+
+        if kospi is None or kospi.empty:
+            # 예전 CSV 가 있으면 거기서, 없으면 내려받는다
+            kospi = build_index_from_csv()
+
+        if kospi is None or kospi.empty:
             kospi = fdr.DataReader("KS11", START)
 
             if kospi.empty:
@@ -466,68 +518,56 @@ def prepare_stock_data():
             kospi.index = pd.to_datetime(kospi.index)
             kospi = kospi.sort_index()
 
-        else:
-            kospi = pd.read_csv(
-                kospi_file,
-                index_col="Date",
-                parse_dates=["Date"],
-            ).sort_index()
+        index_changed = not index_existed
 
-            if kospi.empty:
-                kospi = fdr.DataReader("KS11", START)
+        try:
+            # 마지막 날짜보다 5일 앞부터 다시 받는다.
+            start = (kospi.index[-1] - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
 
-                if kospi.empty:
-                    raise RuntimeError("KOSPI 데이터를 가져오지 못했습니다.")
+            new = fdr.DataReader("KS11", start)
 
-                kospi.index = pd.to_datetime(kospi.index)
-                kospi = kospi.sort_index()
+            if not new.empty:
+                new.index = pd.to_datetime(new.index)
+                new = new.sort_index()
 
-            else:
-                try:
-                    # 마지막 날짜보다 5일 앞부터 다시 받는다.
-                    start = (
-                        kospi.index[-1] - pd.Timedelta(days=5)
-                    ).strftime("%Y-%m-%d")
+                merged = pd.concat([kospi, new])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
 
-                    new = fdr.DataReader("KS11", start)
+                if not merged.equals(kospi):
+                    kospi = merged
+                    index_changed = True
 
-                    if not new.empty:
-                        new.index = pd.to_datetime(new.index)
-                        new = new.sort_index()
-
-                        kospi = pd.concat([kospi, new])
-                        kospi = kospi[
-                            ~kospi.index.duplicated(keep="last")
-                        ].sort_index()
-
-                except Exception as e:
-                    # 갱신 실패 시 기존 KOSPI 파일을 계속 사용
-                    logger.warning(
-                        "KOSPI 지수 갱신 실패, 기존 파일을 사용합니다: %s", e
-                    )
+        except Exception as e:
+            # 갱신 실패 시 기존 데이터를 계속 사용
+            logger.warning("KOSPI 지수 갱신 실패, 기존 데이터를 사용합니다: %s", e)
 
         # 최근 600일만 유지
         cutoff = pd.Timestamp.today() - pd.Timedelta(days=600)
-        kospi = kospi[kospi.index >= cutoff]
+        trimmed = kospi[kospi.index >= cutoff]
+
+        if not trimmed.equals(kospi):
+            index_changed = True
+
+        kospi = trimmed
 
         if kospi.empty:
             raise RuntimeError("KOSPI 데이터가 없습니다.")
 
-        save_if_changed(kospi, kospi_file, index_label="Date")
+        if index_changed:
+            save_bundle(kospi.reset_index(), INDEX_FILE)
 
         # 전체 시장의 최신 거래일
         market_date = kospi.index[-1].date()
 
         # ----------------------------------------------
-        # ③ 개별 종목 주가
+        # ④ 개별 종목 주가
         # ----------------------------------------------
-        for _, stock in stocks.iterrows():
-            code = stock["Code"]
-            stock_file = DATA_FOLDER / f"{code}.csv"
-
+        for code in stocks["Code"]:
             try:
-                # 파일이 없으면 최근 600일 전체 다운로드
-                if not stock_file.exists():
+                df = frames.get(code)
+
+                # 번들에 없으면 최근 600일 전체 다운로드
+                if df is None or df.empty:
                     df = fdr.DataReader(code, START)
 
                     if df.empty:
@@ -535,45 +575,19 @@ def prepare_stock_data():
                         continue
 
                     df.index = pd.to_datetime(df.index)
-                    df = df.sort_index()
-                    save_if_changed(df, stock_file, index_label="Date")
+                    frames[code] = df.sort_index()
 
-                    stats["신규 다운로드"] += 1
-                    continue
-
-                # 기존 파일 읽기
-                df = pd.read_csv(
-                    stock_file,
-                    index_col="Date",
-                    parse_dates=["Date"],
-                ).sort_index()
-
-                # 파일은 있지만 비어 있으면 다시 전체 다운로드
-                if df.empty:
-                    df = fdr.DataReader(code, START)
-
-                    if df.empty:
-                        stats["새 데이터 없음"] += 1
-                        continue
-
-                    df.index = pd.to_datetime(df.index)
-                    df = df.sort_index()
-                    save_if_changed(df, stock_file, index_label="Date")
-
+                    changed = True
                     stats["신규 다운로드"] += 1
                     continue
 
                 # 이미 최신 거래일까지 있으면 다운로드 생략
-                last_date = df.index[-1].date()
-
-                if last_date >= market_date:
+                if df.index[-1].date() >= market_date:
                     stats["이미 최신"] += 1
                     continue
 
                 # 부족한 최근 날짜만 다운로드
-                start = (
-                    df.index[-1] - pd.Timedelta(days=5)
-                ).strftime("%Y-%m-%d")
+                start = (df.index[-1] - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
 
                 new = fdr.DataReader(code, start)
 
@@ -585,15 +599,20 @@ def prepare_stock_data():
                 new = new.sort_index()
 
                 # 기존 데이터 + 새 데이터
-                df = pd.concat([df, new])
-                df = df[
-                    ~df.index.duplicated(keep="last")
-                ].sort_index()
+                merged = pd.concat([df, new])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
 
                 # 최근 600일만 유지
-                df = df[df.index >= cutoff]
+                merged = merged[merged.index >= cutoff]
 
-                save_if_changed(df, stock_file, index_label="Date")
+                # 내용이 같으면 저장할 이유가 없다
+                if merged.equals(df):
+                    stats["이미 최신"] += 1
+                    continue
+
+                frames[code] = merged
+
+                changed = True
                 stats["기존 파일 갱신"] += 1
 
             except Exception as e:
@@ -608,7 +627,26 @@ def prepare_stock_data():
 
                 continue
 
-    # 파일이 하나도 바뀌지 않으면 이 값도 그대로다.
+        # ----------------------------------------------
+        # ⑤ 실제로 바뀐 것이 있을 때만 저장
+        # ----------------------------------------------
+        if changed:
+            rebuilt = []
+
+            for code, part in frames.items():
+                piece = part.reset_index()
+                piece["Code"] = code
+                rebuilt.append(piece)
+
+            new_bundle = (
+                pd.concat(rebuilt, ignore_index=True)[BUNDLE_COLUMNS]
+                .sort_values(["Code", "Date"])
+                .reset_index(drop=True)
+            )
+
+            save_bundle(new_bundle, BUNDLE_FILE)
+
+    # 파일이 바뀌지 않으면 이 값도 그대로다.
     # 그래서 1시간마다 다시 확인해도 계산 결과 캐시는 유지된다.
     data_version = f"{market_date}-{data_fingerprint()}"
 
