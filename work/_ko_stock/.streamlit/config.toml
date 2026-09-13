@@ -1,4 +1,6 @@
 [server]
-# Google Drive 및 수백 개 CSV 파일을 Streamlit이 감시하면서
-# 파일 핸들을 많이 사용하는 것을 방지합니다.
-fileWatcherType = "none"
+# 파일 감시는 기본값(auto: watchdog 사용)을 그대로 쓴다.
+# fileWatcherType = "none" 으로 끄면 Streamlit 이 컴파일해 둔 app.py 캐시를
+# 파일 변경 때 비우지 못한다(열린 세션이 모두 끊겨야 비움). 그래서 코드를 고치거나
+# push 해도 로컬은 재시작, Streamlit Cloud 는 Reboot 전까지 옛 코드가 돈다.
+# 감시 대상은 app.py · 같은 폴더의 파이썬 모듈 · pages 뿐이고, stock_data/ 의 CSV 는 감시하지 않는다.
