@@ -1140,59 +1140,97 @@ positions = st.session_state.setdefault("positions", {})
 st.markdown("#### 보유 종목 입력")
 
 st.caption(
-    "매수가 칸을 눌러 실제로 매수한 가격을 입력하세요. "
-    "입력한 종목만 아래에서 실제 매도 단계를 계산합니다. "
-    "손절가를 비워 두면 MA60과 최대 손실률 중 높은 값을 자동으로 사용합니다."
+    "실제로 매수한 종목의 매수가를 입력하세요. "
+    "입력한 종목만 아래에서 실제 매도 단계를 계산합니다."
 )
 
 
-# 표에 넣을 값을 세션에서 가져온다.
+# --------------------------------------------------
+# 입력칸
 #
-# 숫자 칸으로 만들면 값이 없을 때 Streamlit 이 "None" 이라는 글자를 그린다.
-# 값처럼 보여서 입력하는 칸이라는 것을 알기 어렵다.
-# 그래서 글자 칸으로 두고 빈 값은 빈 칸으로 보이게 한다.
-# 입력한 글자는 아래에서 to_price 가 숫자로 바꾼다.
-editor_df = selected[["Code", "Name", "Close"]].copy()
+# 표(data_editor) 대신 일반 입력칸을 쓴다.
+# 표는 칸을 두 번 눌러야 편집이 열려서 값이 자주 사라진다.
+# --------------------------------------------------
 
-for column in ("매수가", "손절가"):
-    editor_df[column] = [
-        "" if positions.get(c, {}).get(column) is None
-        else f"{positions[c][column]:,.0f}"
-        for c in editor_df["Code"]
-    ]
+form_left, form_mid, form_right, form_button = st.columns([3, 2, 2, 1])
+
+with form_left:
+    # 종목코드와 이름을 함께 보여 준다.
+    choices = list(selected["Code"])
+
+    names = dict(zip(selected["Code"], selected["Name"]))
+
+    pick = st.selectbox(
+        "종목",
+        choices,
+        format_func=lambda c: f"{c} {names.get(c, '')}",
+        key="position_pick",
+    )
+
+with form_mid:
+    buy_input = st.number_input(
+        "매수가",
+        min_value=0,
+        step=100,
+        value=int(positions.get(pick, {}).get("매수가") or 0),
+        key=f"buy_{pick}",
+        help="실제로 매수한 가격. 0이면 미보유로 봅니다.",
+    )
+
+with form_right:
+    stop_input = st.number_input(
+        "손절가 (비우면 자동)",
+        min_value=0,
+        step=100,
+        value=int(positions.get(pick, {}).get("손절가") or 0),
+        key=f"stop_{pick}",
+        help="0이면 MA60과 최대 손실률 중 적절한 값을 자동으로 씁니다.",
+    )
+
+with form_button:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+
+    if st.button("저장", width="stretch"):
+        buy = to_price(buy_input)
+        stop = to_price(stop_input)
+
+        if buy is None:
+            positions.pop(pick, None)
+
+        else:
+            positions[pick] = {"매수가": buy, "손절가": stop}
+
+        st.rerun()
 
 
-edited = st.data_editor(
-    editor_df,
-    hide_index=True,
-    width="stretch",
-    # 종목 정보는 수정할 수 없다.
-    disabled=["Code", "Name", "Close"],
-    column_config={
-        "Close": st.column_config.NumberColumn("현재가", format="%.0f"),
-        "매수가": st.column_config.TextColumn(
-            "매수가 ✏️",
-            help="실제로 매수한 가격을 숫자로 입력하세요. 비워 두면 미보유로 봅니다.",
-        ),
-        "손절가": st.column_config.TextColumn(
-            "손절가 ✏️",
-            help="비워 두면 MA60과 최대 손실률 중 높은 값으로 자동 계산합니다.",
-        ),
-    },
-)
+# --------------------------------------------------
+# 현재 보유 목록
+# --------------------------------------------------
 
+held_codes = [c for c in selected["Code"] if positions.get(c, {}).get("매수가")]
 
-# 편집한 내용을 세션에 다시 저장한다.
-for code, buy, stop in zip(edited["Code"], edited["매수가"], edited["손절가"]):
-    buy = to_price(buy)
-    stop = to_price(stop)
+if not held_codes:
+    st.info("아직 입력한 보유 종목이 없습니다. 위에서 매수가를 입력하고 저장하세요.")
 
-    if buy is None and stop is None:
-        # 둘 다 지웠으면 보유 목록에서 제거
-        positions.pop(code, None)
+else:
+    st.markdown("**현재 보유**")
 
-    else:
-        positions[code] = {"매수가": buy, "손절가": stop}
+    for code in held_codes:
+        row_name, row_buy, row_stop, row_clear = st.columns([3, 2, 2, 1])
+
+        row_name.write(f"{code} {names.get(code, '')}")
+
+        row_buy.write(f"매수가 {positions[code]['매수가']:,.0f}원")
+
+        manual = positions[code].get("손절가")
+
+        row_stop.write(
+            f"손절가 {manual:,.0f}원" if manual else "손절가 자동"
+        )
+
+        if row_clear.button("지우기", key=f"clear_{code}", width="stretch"):
+            positions.pop(code, None)
+            st.rerun()
 
 
 # ==================================================
@@ -1233,7 +1271,22 @@ auto_stop = pd.concat(
 
 # 직접 입력한 손절가가 있으면 우선 사용
 # 매수가가 없는 종목은 손절가도 계산하지 않는다.
-selected["손절가"] = manual_stop.fillna(auto_stop).where(held)
+stop_price = manual_stop.fillna(auto_stop)
+
+
+# 손절가는 반드시 매수가보다 낮아야 한다.
+#
+# 매수가보다 MA60 이 높은 경우(싸게 산 종목)에는 위 식이
+# 매수가보다 높은 손절가를 만든다. 그러면 R 이 음수가 되어
+# 1R / 2R 목표가가 매수가 아래로 내려가 뜻이 뒤집힌다.
+# 그런 경우에는 최대 손실률로 계산한 값을 쓴다.
+too_high = stop_price >= selected["매수가"]
+
+stop_price = stop_price.where(
+    ~too_high, selected["매수가"] * (1 - STOP_RATE)
+)
+
+selected["손절가"] = stop_price.where(held)
 
 
 # ==================================================

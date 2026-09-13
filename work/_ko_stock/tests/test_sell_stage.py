@@ -28,10 +28,10 @@ print("떼어 낸 코드 줄 수 :", len(block.splitlines()))
 # (app.py 필터상 Close > MA20 > MA60 은 항상 성립)
 selected = pd.DataFrame(
     {
-        "Code": ["A", "B", "C", "D", "E", "F"],
-        "Close": [10000.0, 10000.0, 10000.0, 10000.0, 10000.0, 10000.0],
-        "MA20": [9500.0, 9500.0, 9500.0, 9500.0, 9500.0, 9500.0],
-        "MA60": [9000.0, 9000.0, 9000.0, 9000.0, 9000.0, 9000.0],
+        "Code": ["A", "B", "C", "D", "E", "F", "G"],
+        "Close": [10000.0] * 7,
+        "MA20": [9500.0] * 7,
+        "MA60": [9000.0] * 7,
     }
 )
 
@@ -50,6 +50,10 @@ positions = {
     "E": {"매수가": 8500.0, "손절가": 8000.0},
     # 고점에 물렸다. 손절가를 현재가 위로 직접 지정 → 손절 구간
     "F": {"매수가": 13000.0, "손절가": 12000.0},
+    # MA60(9000)보다 싸게 산 경우.
+    # 자동 손절가가 매수가를 넘으면 안 된다. R 이 음수가 되어
+    # 1R / 2R 이 매수가 아래로 뒤집히기 때문이다.
+    "G": {"매수가": 8800.0, "손절가": None},
 }
 
 ns = {"pd": pd, "np": np, "selected": selected, "positions": positions,
@@ -64,6 +68,9 @@ print()
 print(out.to_string(index=False))
 
 expected = {
+    # 손절가 8,096(=8,800×0.92) / 1R 9,504 / 2R 10,208
+    # 현재가 10,000 은 1R 을 넘었지만 2R 에는 못 미친다
+    "G": "1R 이상",
     "A": "미보유",
     "B": "1R 전",
     "C": "1R 전",
@@ -87,5 +94,19 @@ print("미보유 종목 가격 공란 :", "통과" if blank else "실패")
 # 상수가 아니어야 한다 (원래 버그의 핵심)
 varied = out["현재단계"].nunique() > 1
 print("매도 단계가 상수 아님 :", "통과" if varied else "실패")
+
+# 손절가는 언제나 매수가보다 낮아야 한다
+held_rows = out[out["매수가"].notna()]
+below = bool((held_rows["손절가"] < held_rows["매수가"]).all())
+print("손절가 < 매수가      :", "통과" if below else "실패")
+
+# 1R / 2R 은 매수가보다 위여야 한다
+upward = bool(
+    (held_rows["1R(30%매도)"] > held_rows["매수가"]).all()
+    and (held_rows["2R(30%매도)"] > held_rows["1R(30%매도)"]).all()
+)
+print("1R < 2R, 둘 다 매수가 위 :", "통과" if upward else "실패")
+
+ok = ok and below and upward
 
 sys.exit(0 if (ok and blank and varied) else 1)
