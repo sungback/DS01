@@ -32,7 +32,7 @@ CSV 834개가 갱신될 때마다 파일마다 새 blob이 통째로 쌓이기 �
 ### 목표
 
 - 데이터 갱신 1회가 저장소에 더하는 양을 줄인다 (약 20MB → 약 4.8MB)
-- 데이터 갱신으로 바뀌는 파일 수를 834개에서 1~2개로 줄여
+- 데이터 갱신으로 바뀌는 파일 수를 834개에서 1~3개로 줄여
   코드 이력과 리뷰를 읽을 수 있게 만든다
 - Streamlit Cloud 콜드 스타트가 지금처럼 동작해야 한다
   (첫 접속자가 830종목 다운로드를 기다리지 않아야 한다)
@@ -54,7 +54,8 @@ CSV 834개가 갱신될 때마다 파일마다 새 blob이 통째로 쌓이기 �
 
 | 파일 | 위치 | 내용 | git |
 |---|---|---|---|
-| `stock_data.parquet` | `work/_ko_stock/` | 전 종목 OHLCV (KOSPI 지수 포함) | 커밋 |
+| `stock_data.parquet` | `work/_ko_stock/` | 개별 종목 OHLCV | 커밋 |
+| `kospi_index.parquet` | `work/_ko_stock/` | KOSPI 지수(KS11) OHLCV | 커밋 |
 | `kospi_list.parquet` | `work/_ko_stock/` | KOSPI 종목 목록 | 커밋 |
 | `stock_data/*.csv` | `work/_ko_stock/stock_data/` | 노트북 실습·엑셀 열람용 로컬 캐시 | **gitignore** |
 
@@ -64,7 +65,7 @@ long 형식의 단일 표로 저장한다.
 
 | 컬럼 | 형 | 비고 |
 |---|---|---|
-| `Code` | string | 6자리 종목코드. KOSPI 지수는 `"KS11"` |
+| `Code` | string | 6자리 종목코드 |
 | `Date` | datetime64 | 거래일 |
 | `Open` `High` `Low` `Close` | int64 | 기존 CSV의 dtype을 그대로 유지 |
 | `Volume` | int64 | |
@@ -74,8 +75,26 @@ long 형식의 단일 표로 저장한다.
 - 압축: zstd
 - 보관 범위: 최근 600일 (기존과 동일)
 
-KOSPI 지수를 별도 파일로 두지 않고 `Code == "KS11"` 행으로 합친다.
-컬럼 구성이 개별 종목과 같아 표를 나눌 이유가 없다.
+### kospi_index.parquet 스키마
+
+KOSPI 지수(KS11)를 개별 종목과 **같은 표에 담지 않는다.**
+
+처음에는 컬럼 구성이 같으니 `Code == "KS11"` 행으로 합치려 했으나,
+실제 데이터를 확인하니 dtype이 다르다.
+
+```
+OHLC dtype 조합별 파일 수
+  (int64, int64, int64, int64)         : 833개   ← 개별 종목 전부
+  (float64, float64, float64, float64) :   1개   ← KS11
+```
+
+지수는 `6909.91` 처럼 소수점을 가지므로 float이다.
+하나의 표로 합치면 `concat` 이 833개 종목의 `int64` 를 `float64` 로 끌어올려,
+"동작이 바뀌지 않는다"는 이번 전환의 안전 근거가 깨진다.
+
+따라서 지수는 별도 파일에 둔다. 컬럼은 `Date` 인덱스에
+`Open/High/Low/Close`(float64), `Volume`, `Change` 를 가진다.
+`Code` 컬럼은 두지 않는다.
 
 ### kospi_list.parquet 스키마
 
@@ -97,13 +116,14 @@ def load_bundle(data_version):
 ```
 
 `compute_metrics`와 `render_chart`가 공유한다.
-종목별 슬라이스를 빠르게 하기 위해 `Code`를 인덱스나 category로 둔다.
+종목별로 나누면서 `Code` 컬럼은 버린다. 문자열 중복이 사라지고,
+소비 함수들이 기존 CSV 경로와 똑같은 모양의 표를 받는다.
 
 메모리는 331,756행 × 8컬럼 기준 약 20MB로, Cloud 한도 안에서 안전하다.
 
 ### 4.2 `data_fingerprint()`
 
-CSV 835개를 stat 하던 것을 번들 2개 stat 으로 바꾼다.
+CSV 835개를 stat 하던 것을 번들 3개 stat 으로 바꾼다.
 반환 형식(md5 12자)과 용도는 그대로다.
 
 ### 4.3 `prepare_stock_data()`
@@ -127,7 +147,7 @@ parquet은 바이트 단위 재현이 보장되지 않으므로 텍스트 비교
 
 ### 4.4 `load_market` / `load_stocks`
 
-- `load_market` — 번들에서 `Code == "KS11"` 슬라이스
+- `load_market` — `kospi_index.parquet` 읽기
 - `load_stocks` — `kospi_list.parquet` 읽기
 
 ### 4.5 `compute_metrics`
@@ -161,11 +181,12 @@ mplfinance에 넘기는 표의 **컬럼 순서와 dtype이 CSV 경로와 같아�
 둘 다 없음                    → 기존처럼 전체 다운로드
 ```
 
-두 번째 갈래에서 만드는 것은 두 파일 모두다.
+두 번째 갈래에서 만드는 것은 세 파일 모두다.
 
-- `stock_data/*.csv` (`KOSPI_list.csv` 제외) → `stock_data.parquet`
-  - 파일명이 곧 `Code`가 된다. `KS11.csv`는 `Code == "KS11"` 로 들어간다
+- `stock_data/*.csv` (`KOSPI_list.csv`, `KS11.csv` 제외) → `stock_data.parquet`
+  - 파일명이 곧 `Code`가 된다
   - 읽지 못하는 파일은 건너뛰고 로그를 남긴다
+- `stock_data/KS11.csv` → `kospi_index.parquet`
 - `stock_data/KOSPI_list.csv` → `kospi_list.parquet`
   - 목록 CSV가 없으면 이 단계는 건너뛴다.
     `prepare_stock_data`가 네트워크에서 목록을 받아 새로 만든다
@@ -221,7 +242,7 @@ parquet 입출력에는 pyarrow가 필요하다.
 |---|---|
 | 번들 파일 손상 시 앱 전체가 뜨지 않음 | 읽기 실패를 잡아 로그를 남기고, CSV 캐시가 있으면 거기서 복구한다 |
 | 번들 저장 중 중단되어 파일이 깨짐 | 임시 파일에 쓴 뒤 원자적으로 교체한다 |
-| 메모리 증가 (전체를 한 번에 적재) | 약 20MB로 Cloud 한도 안. `Code`를 category로 두어 문자열 중복을 없앤다 |
+| 메모리 증가 (전체를 한 번에 적재) | 약 20MB로 Cloud 한도 안. 종목별로 나누며 `Code` 컬럼을 버려 문자열 중복을 없앤다 |
 | 노트북과 앱의 형식이 갈라짐 | 앱은 번들만 읽는다. CSV는 실습용이며 앱의 입력이 아니다 (마이그레이션 시점 제외) |
 
 ## 10. 되돌리기
@@ -233,3 +254,49 @@ parquet 입출력에는 pyarrow가 필요하다.
 3. app.py를 이전 커밋으로 되돌림
 
 CSV는 로컬에 그대로 남아 있으므로 데이터 손실 없이 복구할 수 있다.
+
+## 11. 구현 결과
+
+구현일: 2026-09-13
+구현 계획: `docs/2026-09-13-parquet-bundle-plan.md`
+브랜치: `parquet-bundle`
+
+| 검증 항목 | 결과 |
+|---|---|
+| 1. 지표 동치 | 거래대금 6구간(1·5·10·50·200·1000억) 전부 `assert_frame_equal` 통과 |
+| 2. 차트 동일성 | 3종목(005930·000660·005380) PNG 바이트 완전 동일 |
+| 3. 콜드 스타트 | 통과 — `stock_data/` 없이 번들만으로 앱 기동 |
+| 4. 지문 안정성 | 통과 — 재실행 시 `data_fingerprint` 유지 |
+| 5. Python 3.13 | 통과 — 깨끗한 3.13.11 venv 에서 11종 전부 |
+| 6. 기존 회귀 | 11종 전부 통과 |
+
+번들 크기: `stock_data.parquet` 4.8 MB, `kospi_index.parquet` 30 KB,
+`kospi_list.parquet` 63 KB (합계 약 4.9 MB)
+전환 전 CSV: 835개 18.5 MB
+
+저장소 효과:
+
+```
+데이터 갱신 1회당 증가   약 20.0 MB → 약 4.8 MB  (약 15.2 MB 절감)
+갱신 시 바뀌는 파일 수   834개 → 3개
+과거 CSV blob            8,029개 · 172.5 MB (2절대로 줄지 않음)
+```
+
+### 구현 중 설계를 고친 곳
+
+**KOSPI 지수를 별도 파일로 분리했다.** 3절이 처음에는 `Code == "KS11"`
+행으로 합치기로 했으나, 실제 데이터에서 지수만 OHLC 가 float64 였다
+(개별 종목 833개는 전부 int64). 한 표에 담으면 `concat` 이 종목 값까지
+float 으로 끌어올려 "동작이 바뀌지 않는다"는 전환의 안전 근거가 깨진다.
+Task 2 의 dtype 검사가 이를 잡아냈다.
+
+### 검증 기준을 낮춘 곳
+
+없다. 8절의 여섯 항목을 모두 원래 기준 그대로 만족했다.
+
+다만 `kospi_list.parquet` 의 **전체 컬럼 dtype 비교는 포기했고**,
+앱이 실제로 쓰는 `Code` 와 `Name` 만 비교한다. CSV 왕복이 타입을
+뭉개기 때문이다 — `ChangeCode` 는 원본이 문자열 `'2','3','1'` 인데
+CSV 를 거치면 int64 가 되고, `Dept` 는 전부 결측이라 float64 로 추론된다.
+parquet 이 fdr 원본 타입을 그대로 보존하므로 오히려 충실하며,
+CSV 의 손실된 추론을 재현하라고 요구할 이유가 없다.
