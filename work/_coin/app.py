@@ -705,23 +705,50 @@ def ohlcv_cache_path(symbol: str, unit: int) -> Path:
     return ohlcv_cache_dir(unit) / f"{symbol.replace('-', '_')}.json"
 
 
-def ohlcv_cache_is_usable(path: Path, unit: int, expire_minutes: int) -> bool:
+def _saved_at_kst(payload: Any) -> Optional[pd.Timestamp]:
+    """캐시에 기록된 저장 시각(KST, tz-naive). 없거나 해석할 수 없으면 None.
+
+    시간대가 없는 값은 이 컴퓨터의 현지 시각으로 본다
+    (save_ohlcv가 datetime.now()로 기록한다).
+    """
+    if not isinstance(payload, dict):
+        return None
+    try:
+        saved = datetime.fromisoformat(str(payload["saved_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return pd.Timestamp(saved.astimezone()).tz_convert("Asia/Seoul").tz_localize(None)
+
+
+def ohlcv_cache_is_usable(
+    path: Path,
+    unit: int,
+    expire_minutes: int,
+    now_kst: Optional[pd.Timestamp] = None,
+) -> bool:
     """캐시를 그대로 써도 되는지 판단한다.
+
+    파일 수정 시각이 아니라 캐시 안에 기록한 저장 시각(saved_at)으로 판단한다.
+    수정 시각은 git clone, 복사, 클라우드 동기화 때 '지금'으로 바뀌어
+    며칠 지난 캔들도 방금 받은 캐시처럼 보이기 때문이다.
+    saved_at이 없거나 해석할 수 없으면 신선도를 알 수 없으므로 쓰지 않는다.
 
     두 조건을 모두 만족해야 한다.
       1) TTL이 남아 있을 것
-      2) 진행 중인 캔들이 시작된 이후에 갱신됐을 것
+      2) 진행 중인 캔들이 시작된 이후에 저장됐을 것
 
     2번 덕분에 새 봉이 열리면 TTL이 남아 있어도 다시 조회한다.
     """
-    if not path.exists():
-        return False
-    if _age_minutes(path) > expire_minutes:
+    saved = _saved_at_kst(_read_json(path))
+    if saved is None:
         return False
 
-    saved_at = pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC")
-    saved_kst = saved_at.tz_convert("Asia/Seoul").tz_localize(None)
-    return saved_kst >= current_candle_start_kst(unit)
+    now = _now_kst_naive(now_kst)
+    age_minutes = (now - saved).total_seconds() / 60
+    # 다른 컴퓨터의 시계가 앞서 있어 미래로 기록된 저장 시각은 믿지 않는다.
+    if not -1 <= age_minutes <= expire_minutes:
+        return False
+    return saved >= current_candle_start_kst(unit, now)
 
 
 def load_ohlcv(symbol: str, unit: int) -> Optional[pd.DataFrame]:

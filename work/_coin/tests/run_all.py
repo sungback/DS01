@@ -15,6 +15,7 @@ TESTS = [
     "test_trade_plan.py",
     "test_advice.py",
     "test_screen_entry.py",
+    "test_cache_freshness.py",
     "test_pipeline_offline.py",
 ]
 
