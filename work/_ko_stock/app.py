@@ -705,6 +705,7 @@ def compute_metrics(data_version):
     """
 
     stocks = load_stocks(data_version)
+    groups = load_bundle(data_version)
     rows = []
 
     # 읽거나 계산하지 못한 종목
@@ -714,18 +715,13 @@ def compute_metrics(data_version):
         code = stock["Code"]
         name = stock["Name"]
 
-        stock_file = DATA_FOLDER / f"{code}.csv"
+        # 번들에 없는 종목은 제외
+        df = groups.get(code)
 
-        # 주가 파일이 없으면 제외
-        if not stock_file.exists():
+        if df is None:
             continue
 
         try:
-            # 주가 데이터 읽기
-            df = pd.read_csv(
-                stock_file, index_col="Date", parse_dates=["Date"]
-            ).sort_index()
-
             # MA120과 모멘텀 계산에 필요한 데이터
             if len(df) < 130:
                 continue

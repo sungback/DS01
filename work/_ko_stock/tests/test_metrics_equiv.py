@@ -41,7 +41,7 @@ def extract(path, names):
 
 baseline = extract(PROJECT / "tests" / "baseline" / "app_baseline.py",
                    ["load_stocks", "analyze_stocks"])
-current = extract(APP, ["load_stocks", "compute_metrics"])
+current = extract(APP, ["load_stocks", "load_bundle", "compute_metrics"])
 
 metrics, err = current["compute_metrics"]("v")
 print("분석 오류 :", err["count"], "/", err["total"], err["codes"])
