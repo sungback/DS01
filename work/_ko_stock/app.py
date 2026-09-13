@@ -1140,97 +1140,117 @@ positions = st.session_state.setdefault("positions", {})
 st.markdown("#### 보유 종목 입력")
 
 st.caption(
-    "실제로 매수한 종목의 매수가를 입력하세요. "
-    "입력한 종목만 아래에서 실제 매도 단계를 계산합니다."
+    "매수가 칸을 두 번 눌러 실제로 매수한 가격을 입력하고 Enter 를 누르세요. "
+    "입력한 종목만 아래에서 실제 매도 단계를 계산합니다. "
+    "손절가를 비워 두면 MA60과 최대 손실률 중 적절한 값을 자동으로 사용합니다."
 )
 
 
+def build_editor_df():
+    """세션에 저장된 보유 정보로 표 데이터를 만든다."""
+
+    df = selected[["Code", "Name", "Close"]].copy()
+
+    # 숫자 칸으로 만들면 값이 없을 때 Streamlit 이 "None" 이라는 글자를 그린다.
+    # 값처럼 보여서 입력하는 칸이라는 것을 알기 어렵다.
+    # 그래서 글자 칸으로 두고 빈 값은 빈 칸으로 보이게 한다.
+    for column in ("매수가", "손절가"):
+        df[column] = [
+            "" if positions.get(c, {}).get(column) is None
+            else f"{positions[c][column]:,.0f}"
+            for c in df["Code"]
+        ]
+
+    return df
+
+
 # --------------------------------------------------
-# 입력칸
+# 표 데이터는 세션에 보관하고 매번 다시 만들지 않는다.
 #
-# 표(data_editor) 대신 일반 입력칸을 쓴다.
-# 표는 칸을 두 번 눌러야 편집이 열려서 값이 자주 사라진다.
+# 매 실행마다 새로 만들면 값을 하나 입력한 순간 표의 내용이 바뀐다.
+# 그러면 Streamlit 이 표를 다른 위젯으로 보고 다시 그리는데,
+# 그 사이에 입력하던 내용이 사라진다.
+# 입력하고 Enter 를 눌러도 반영되지 않던 원인이다.
+#
+# 종목 구성이 실제로 달라졌을 때만 표를 새로 만든다.
 # --------------------------------------------------
 
-form_left, form_mid, form_right, form_button = st.columns([3, 2, 2, 1])
+current_rows = tuple(selected["Code"])
 
-with form_left:
-    # 종목코드와 이름을 함께 보여 준다.
-    choices = list(selected["Code"])
+if st.session_state.get("editor_rows") != current_rows:
+    st.session_state["editor_rows"] = current_rows
+    st.session_state["editor_data"] = build_editor_df()
 
-    names = dict(zip(selected["Code"], selected["Name"]))
+# 표를 새로 그려야 할 때 올리는 번호
+editor_seq = st.session_state.setdefault("editor_seq", 0)
 
-    pick = st.selectbox(
-        "종목",
-        choices,
-        format_func=lambda c: f"{c} {names.get(c, '')}",
-        key="position_pick",
-    )
 
-with form_mid:
-    buy_input = st.number_input(
-        "매수가",
-        min_value=0,
-        step=100,
-        value=int(positions.get(pick, {}).get("매수가") or 0),
-        key=f"buy_{pick}",
-        help="실제로 매수한 가격. 0이면 미보유로 봅니다.",
-    )
+edited = st.data_editor(
+    st.session_state["editor_data"],
+    # 이름을 고정해 두면 표의 내용이 바뀌어도 같은 위젯으로 유지된다.
+    key=f"positions_editor_{editor_seq}",
+    hide_index=True,
+    width="stretch",
+    # 종목 정보는 수정할 수 없다.
+    disabled=["Code", "Name", "Close"],
+    column_config={
+        "Close": st.column_config.NumberColumn("현재가", format="%.0f"),
+        "매수가": st.column_config.TextColumn(
+            "매수가 ✏️",
+            help="실제로 매수한 가격을 숫자로 입력하세요. 비워 두면 미보유로 봅니다.",
+        ),
+        "손절가": st.column_config.TextColumn(
+            "손절가 ✏️",
+            help="비워 두면 MA60과 최대 손실률 중 적절한 값으로 자동 계산합니다.",
+        ),
+    },
+)
 
-with form_right:
-    stop_input = st.number_input(
-        "손절가 (비우면 자동)",
-        min_value=0,
-        step=100,
-        value=int(positions.get(pick, {}).get("손절가") or 0),
-        key=f"stop_{pick}",
-        help="0이면 MA60과 최대 손실률 중 적절한 값을 자동으로 씁니다.",
-    )
 
-with form_button:
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+# 편집한 내용을 다음 실행에서도 그대로 쓰도록 보관한다.
+#
+# 칸을 지우면 그리드가 빈 글자가 아니라 빈 값을 넣는다.
+# 그대로 두면 다음 화면에 "None" 이라는 글자가 보이므로 빈 글자로 바꾼다.
+kept = edited.copy()
 
-    if st.button("저장", width="stretch"):
-        buy = to_price(buy_input)
-        stop = to_price(stop_input)
+cleared = False
 
-        if buy is None:
-            positions.pop(pick, None)
+for column in ("매수가", "손절가"):
+    values = []
+
+    for value in kept[column]:
+        if value is None or pd.isna(value):
+            cleared = True
+            values.append("")
 
         else:
-            positions[pick] = {"매수가": buy, "손절가": stop}
+            values.append(str(value))
 
-        st.rerun()
+    kept[column] = values
+
+st.session_state["editor_data"] = kept
 
 
-# --------------------------------------------------
-# 현재 보유 목록
-# --------------------------------------------------
+# 편집한 내용을 세션에 다시 저장한다.
+for code, buy, stop in zip(edited["Code"], edited["매수가"], edited["손절가"]):
+    buy = to_price(buy)
+    stop = to_price(stop)
 
-held_codes = [c for c in selected["Code"] if positions.get(c, {}).get("매수가")]
+    if buy is None and stop is None:
+        # 둘 다 지웠으면 보유 목록에서 제거
+        positions.pop(code, None)
 
-if not held_codes:
-    st.info("아직 입력한 보유 종목이 없습니다. 위에서 매수가를 입력하고 저장하세요.")
+    else:
+        positions[code] = {"매수가": buy, "손절가": stop}
 
-else:
-    st.markdown("**현재 보유**")
 
-    for code in held_codes:
-        row_name, row_buy, row_stop, row_clear = st.columns([3, 2, 2, 1])
-
-        row_name.write(f"{code} {names.get(code, '')}")
-
-        row_buy.write(f"매수가 {positions[code]['매수가']:,.0f}원")
-
-        manual = positions[code].get("손절가")
-
-        row_stop.write(
-            f"손절가 {manual:,.0f}원" if manual else "손절가 자동"
-        )
-
-        if row_clear.button("지우기", key=f"clear_{code}", width="stretch"):
-            positions.pop(code, None)
-            st.rerun()
+# 칸을 지웠으면 표를 새 번호로 다시 그린다.
+#
+# 같은 이름을 계속 쓰면 '지웠다' 는 편집 내용이 표에 계속 덧씌워져
+# 빈 칸에 "None" 이라는 글자가 남는다.
+if cleared:
+    st.session_state["editor_seq"] = editor_seq + 1
+    st.rerun()
 
 
 # ==================================================
