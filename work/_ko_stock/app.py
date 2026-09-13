@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 import hashlib
 import io
+import json
 import platform
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -89,6 +90,10 @@ DATA_FOLDER.mkdir(parents=True, exist_ok=True)
 BUNDLE_FILE = BASE_DIR / "stock_data.parquet"
 INDEX_FILE = BASE_DIR / "kospi_index.parquet"
 LIST_FILE = BASE_DIR / "kospi_list.parquet"
+
+# 입력한 보유 종목을 저장해 두는 파일
+# 새로고침하거나 앱을 다시 켜도 값이 남는다.
+POSITIONS_FILE = BASE_DIR / "positions.json"
 
 # 번들 컬럼 순서
 BUNDLE_COLUMNS = [
@@ -199,6 +204,58 @@ st.sidebar.caption("주가 파일은 1시간마다 최신 여부를 자동 확�
 # ==================================================
 # 6. 작은 카드 출력 함수
 # ==================================================
+
+
+def load_positions():
+    """저장해 둔 보유 종목을 읽는다. 없거나 깨졌으면 빈 값."""
+
+    if not POSITIONS_FILE.exists():
+        return {}
+
+    try:
+        saved = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+
+    except Exception as e:
+        logger.warning("보유 종목 파일을 읽지 못했습니다: %s", e)
+        return {}
+
+    if not isinstance(saved, dict):
+        return {}
+
+    # 저장된 값이 숫자인지 확인한다.
+    clean = {}
+
+    for code, item in saved.items():
+        if not isinstance(item, dict):
+            continue
+
+        buy = item.get("매수가")
+
+        if not isinstance(buy, (int, float)) or buy <= 0:
+            continue
+
+        stop = item.get("손절가")
+
+        if not isinstance(stop, (int, float)) or stop <= 0:
+            stop = None
+
+        clean[str(code)] = {"매수가": float(buy), "손절가": stop}
+
+    return clean
+
+
+def save_positions(data):
+    """보유 종목을 파일로 저장한다."""
+
+    try:
+        POSITIONS_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    except Exception as e:
+        # 저장에 실패해도 앱은 계속 돌아야 한다.
+        logger.warning("보유 종목을 저장하지 못했습니다: %s", e)
 
 
 def to_price(value):
@@ -1134,15 +1191,23 @@ if selected.empty:
 
 # 입력한 값은 종목코드를 기준으로 보관한다.
 # 종목 유형이나 차트 개수를 바꿔 목록이 달라져도 값이 그대로 유지된다.
-positions = st.session_state.setdefault("positions", {})
+#
+# 처음 열 때는 저장해 둔 파일에서 읽어 온다.
+# 그래야 새로고침하거나 앱을 다시 켜도 입력한 값이 남는다.
+if "positions" not in st.session_state:
+    st.session_state["positions"] = load_positions()
+
+positions = st.session_state["positions"]
 
 
 st.markdown("#### 보유 종목 입력")
 
 st.caption(
     "매수가 칸을 두 번 눌러 실제로 매수한 가격을 입력하고 Enter 를 누르세요. "
+    "지울 때도 칸을 두 번 눌러 내용을 비우고 Enter 를 누릅니다. "
     "입력한 종목만 아래에서 실제 매도 단계를 계산합니다. "
-    "손절가를 비워 두면 MA60과 최대 손실률 중 적절한 값을 자동으로 사용합니다."
+    "손절가를 비워 두면 MA60과 최대 손실률 중 적절한 값을 자동으로 사용합니다. "
+    "입력한 값은 파일에 저장되어 새로고침해도 남습니다."
 )
 
 
@@ -1242,6 +1307,11 @@ for code, buy, stop in zip(edited["Code"], edited["매수가"], edited["손절�
 
     else:
         positions[code] = {"매수가": buy, "손절가": stop}
+
+
+# 바뀐 내용이 있으면 파일에 저장한다.
+if positions != load_positions():
+    save_positions(positions)
 
 
 # 칸을 지웠으면 표를 새 번호로 다시 그린다.

@@ -10,6 +10,7 @@ TESTS = [
     "test_prepare_bundle.py",
     "test_metrics_equiv.py",
     "test_to_price.py",
+    "test_positions_file.py",
     "test_sell_stage.py",
     "test_error_log.py",
     "test_fingerprint.py",

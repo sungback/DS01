@@ -8,3 +8,4 @@ venv/
 .ipynb_checkpoints/
 tests/_scratch/
 stock_data/
+positions.json
