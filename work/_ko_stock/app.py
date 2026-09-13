@@ -1340,11 +1340,12 @@ def render_chart(code, chart_days, title, buy, stop, r1, r2, data_version):
     (PNG 바이트, 데이터 행 수) 를 돌려준다.
     """
 
-    _ = data_version
+    groups = load_bundle(data_version)
 
-    chart_df = pd.read_csv(
-        DATA_FOLDER / f"{code}.csv", index_col="Date", parse_dates=["Date"]
-    ).sort_index()
+    chart_df = groups.get(code)
+
+    if chart_df is None:
+        raise KeyError(f"번들에 {code} 주가가 없습니다.")
 
     # 이동평균선은 전체 데이터로 먼저 계산한 뒤
     # 사용자가 선택한 기간만 화면에 표시한다.

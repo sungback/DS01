@@ -13,11 +13,12 @@ import matplotlib.font_manager as fm
 from matplotlib.lines import Line2D
 import mplfinance as mpf
 
-from conftest_paths import APP, DATA_FOLDER, LIST_FILE, BUNDLE_FILE, PROJECT, SCRATCH
+from conftest_paths import (APP, BUNDLE_FILE, DATA_FOLDER, INDEX_FILE,
+                            LIST_FILE, PROJECT, SCRATCH)
 
 warnings.filterwarnings("ignore")
 
-P = Pathstr(PROJECT)
+P = PROJECT
 APP_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else APP
 OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else (SCRATCH / "charts")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -69,12 +70,15 @@ for code in CODES:
         import ast, logging
         tree = ast.parse(src)
         fn = [n for n in tree.body if isinstance(n, ast.FunctionDef)
-              and n.name == "render_chart"]
-        assert fn, "render_chart 함수를 찾지 못했습니다"
-        fn[0].decorator_list = []
+              and n.name in ("load_bundle", "render_chart")]
+        assert len(fn) >= 1, "render_chart 함수를 찾지 못했습니다"
+        for n in fn:
+            n.decorator_list = []
         ns = {"pd": pd, "mpf": mpf, "plt": plt, "style": style, "io": io,
               "Line2D": Line2D, "ma_legend": ma_legend, "PLOT_LOCK": RLock(),
-              "DATA_FOLDER": P / "stock_data", "logger": logging.getLogger("x")}
+              "DATA_FOLDER": DATA_FOLDER, "BUNDLE_FILE": BUNDLE_FILE,
+              "INDEX_FILE": INDEX_FILE, "LIST_FILE": LIST_FILE,
+              "logger": logging.getLogger("x")}
         exec(compile(ast.Module(body=fn, type_ignores=[]), "app.py", "exec"), ns)
         png, _ = ns["render_chart"](code, CHART_DAYS, title, None, None, None, None, "v")
 
