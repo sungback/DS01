@@ -1,0 +1,11 @@
+# 앱이 실행할 때마다 새로 쓰는 캐시와 결과.
+# 캐시 신선도를 파일 수정 시각으로 판단하므로, git 에 두면 clone 직후
+# 며칠 지난 캔들이 '방금 받은 캐시' 로 판정된다. 앱은 빈 폴더에서 스스로 만든다.
+upbit_cache/
+output/
+
+# Python
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
