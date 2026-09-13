@@ -10,6 +10,7 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 import hashlib
+import io
 import platform
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1189,83 +1190,27 @@ ma_legend = [
 
 
 # ==================================================
-# 25. 선택된 모든 종목 차트
+# 25. 차트 그리기 (결과를 캐시)
 # ==================================================
 
-# CHART_N = 10이면 최대 10개의 차트 출력
-for i, (_, row) in enumerate(selected.iterrows(), start=1):
-    code = row["Code"]
-    name = row["Name"]
 
-    stock_file = DATA_FOLDER / f"{code}.csv"
+@st.cache_data(show_spinner=False, max_entries=120)
+def render_chart(code, chart_days, title, buy, stop, r1, r2, data_version):
+    """
+    종목 차트를 그려 PNG 바이트로 돌려준다.
 
-    # --------------------------------------------------
-    # 주가 데이터 읽기
-    # --------------------------------------------------
+    같은 입력이면 다시 그리지 않는다.
+    차트 그리기는 화면 표시 비용의 대부분을 차지하므로,
+    유형이나 추천 종목 수만 바꿨을 때 같은 차트를 다시 그리지 않게 한다.
 
-    try:
-        chart_df = pd.read_csv(
-            stock_file, index_col="Date", parse_dates=["Date"]
-        ).sort_index()
+    (PNG 바이트, 데이터 행 수) 를 돌려준다.
+    """
 
-    except Exception as e:
-        st.warning(f"{name} 차트 데이터를 읽지 못했습니다: {e}")
+    _ = data_version
 
-        continue
-
-    # MA200 계산에 필요한 데이터 확인
-    if len(chart_df) < 200:
-        st.warning(f"{name} : MA200을 표시하기에 데이터가 부족합니다.")
-
-    # ==================================================
-    # 26. 종목 이름
-    # ==================================================
-
-    st.markdown(f"### {i}. {name} ({code})")
-
-    # ==================================================
-    # 27. 매매 정보 카드
-    # ==================================================
-
-    # --------------------------------------------------
-    # 첫 번째 줄
-    # 현재가 / 매수가 / 손절가 / 1R
-    # --------------------------------------------------
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    show_card(c1, "현재가", won(row["Close"]))
-
-    show_card(c2, "매수가", won(row["매수가"]))
-
-    show_card(c3, "손절가", won(row["손절가"]))
-
-    show_card(c4, "1R(30%매도)", won(row["1R(30%매도)"]))
-
-    # --------------------------------------------------
-    # 두 번째 줄
-    # 2R / 매수점수 / 현재단계 / 매도신호
-    # --------------------------------------------------
-
-    c5, c6, c7, c8 = st.columns(4)
-
-    show_card(c5, "2R(30%매도)", won(row["2R(30%매도)"]))
-
-    show_card(c6, "매수 점수", f"{row['BuyScore']:.1f}점")
-
-    show_card(c7, "현재 단계", row["현재단계"])
-
-    show_card(c8, "매도 신호", row["매도신호"])
-
-    # ==================================================
-    # 28. 차트 제목
-    # ==================================================
-
-    title = f"{name} | {row['유형']} | 위험도 {row['위험도']}\n{row['해석']}"
-
-    # ==================================================
-    # 29. 캔들 차트
-    # ==================================================
+    chart_df = pd.read_csv(
+        DATA_FOLDER / f"{code}.csv", index_col="Date", parse_dates=["Date"]
+    ).sort_index()
 
     # 이동평균선은 전체 데이터로 먼저 계산한 뒤
     # 사용자가 선택한 기간만 화면에 표시한다.
@@ -1274,7 +1219,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
     for period in (20, 60, 120, 200):
         plot_df[f"MA{period}"] = plot_df["Close"].rolling(period).mean()
 
-    plot_df = plot_df.tail(CHART_DAYS)
+    plot_df = plot_df.tail(chart_days)
 
     ma_colors = {20: "orange", 60: "green", 120: "purple", 200: "black"}
     ma_addplots = [
@@ -1325,22 +1270,22 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
                 bar.set_width(new_width)
 
         # ==================================================
-        # 30. 매수가 / 손절가 / 1R / 2R 선
+        # 26. 매수가 / 손절가 / 1R / 2R 선
         # ==================================================
 
         price_lines = [
             # 매수가
-            ("매수가", row["매수가"], "#1565C0", "-"),
+            ("매수가", buy, "#1565C0", "-"),
             # 손절가
-            ("손절가", row["손절가"], "#D32F2F", "--"),
+            ("손절가", stop, "#D32F2F", "--"),
             # 1R
-            ("1R(30%매도)", row["1R(30%매도)"], "#00838F", "-."),
+            ("1R(30%매도)", r1, "#00838F", "-."),
             # 2R
-            ("2R(30%매도)", row["2R(30%매도)"], "#C2185B", ":"),
+            ("2R(30%매도)", r2, "#C2185B", ":"),
         ]
 
         # 매수가를 입력하지 않은 종목은 그릴 가격선이 없다.
-        price_lines = [item for item in price_lines if not pd.isna(item[1])]
+        price_lines = [item for item in price_lines if item[1] is not None]
 
         # 가격선 범례
         price_legend = []
@@ -1393,7 +1338,7 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
             )
 
         # ==================================================
-        # 31. 전체 범례
+        # 27. 전체 범례
         # ==================================================
 
         ax.legend(
@@ -1404,13 +1349,105 @@ for i, (_, row) in enumerate(selected.iterrows(), start=1):
         )
 
         # ==================================================
-        # 32. Streamlit에 차트 표시
+        # 28. 그림을 PNG 로 저장
         # ==================================================
 
-        st.pyplot(fig, width="stretch")
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png")
 
         # 다음 그래프를 위해 닫기
         plt.close(fig)
+
+    return buffer.getvalue(), len(chart_df)
+
+
+# ==================================================
+# 29. 선택된 모든 종목 차트
+# ==================================================
+
+# CHART_N = 10이면 최대 10개의 차트 출력
+# CHART_N = 10이면 최대 10개의 차트 출력
+for i, (_, row) in enumerate(selected.iterrows(), start=1):
+    code = row["Code"]
+    name = row["Name"]
+
+    # ==================================================
+    # 30. 종목 이름
+    # ==================================================
+
+    st.markdown(f"### {i}. {name} ({code})")
+
+    # ==================================================
+    # 31. 매매 정보 카드
+    # ==================================================
+
+    # --------------------------------------------------
+    # 첫 번째 줄
+    # 현재가 / 매수가 / 손절가 / 1R
+    # --------------------------------------------------
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    show_card(c1, "현재가", won(row["Close"]))
+
+    show_card(c2, "매수가", won(row["매수가"]))
+
+    show_card(c3, "손절가", won(row["손절가"]))
+
+    show_card(c4, "1R(30%매도)", won(row["1R(30%매도)"]))
+
+    # --------------------------------------------------
+    # 두 번째 줄
+    # 2R / 매수점수 / 현재단계 / 매도신호
+    # --------------------------------------------------
+
+    c5, c6, c7, c8 = st.columns(4)
+
+    show_card(c5, "2R(30%매도)", won(row["2R(30%매도)"]))
+
+    show_card(c6, "매수 점수", f"{row['BuyScore']:.1f}점")
+
+    show_card(c7, "현재 단계", row["현재단계"])
+
+    show_card(c8, "매도 신호", row["매도신호"])
+
+    # ==================================================
+    # 32. 차트 제목
+    # ==================================================
+
+    title = f"{name} | {row['유형']} | 위험도 {row['위험도']}\n{row['해석']}"
+
+    # ==================================================
+    # 33. 캔들 차트
+    # ==================================================
+
+    # 값이 없는 가격선은 None 으로 넘긴다.
+    # NaN 은 서로 같지 않아 캐시 키로 쓰기에 알맞지 않다.
+    prices = [
+        None if pd.isna(row[key]) else float(row[key])
+        for key in ("매수가", "손절가", "1R(30%매도)", "2R(30%매도)")
+    ]
+
+    try:
+        chart_png, row_count = render_chart(
+            code, CHART_DAYS, title, *prices, data_version
+        )
+
+    except Exception as e:
+        logger.warning("%s 차트 생성 실패: %s", code, e)
+
+        st.warning(f"{name} 차트를 그리지 못했습니다: {e}")
+
+        st.divider()
+
+        continue
+
+    # MA200 계산에 필요한 데이터 확인
+    # (캐시된 차트에서도 안내가 사라지지 않도록 함수 밖에서 처리한다.)
+    if row_count < 200:
+        st.warning(f"{name} : MA200을 표시하기에 데이터가 부족합니다.")
+
+    st.image(chart_png, width="stretch")
 
     # 종목 사이 구분선
     st.divider()
