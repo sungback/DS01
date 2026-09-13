@@ -2203,7 +2203,7 @@ def _draw_price_legend(ax, candidate: Candidate) -> None:
                 ),
                 (
                     TRAIL_COLOR,
-                    f"Runner Trail: {format_price(plan.trailing_stop_current)}원",
+                    f"Trail(현재 본전): {format_price(plan.trailing_stop_current)}원",
                     1.0,
                 ),
             ]
@@ -2952,7 +2952,7 @@ def render_strategy_cards(candidates: list[Candidate], count: int) -> None:
 - **1차 익절:** {format_price(plan.take_profit_1)}원에서 30%
 - **2차 익절:** {format_price(plan.take_profit_2)}원에서 30%
 - **Runner:** 남은 40% 유지, {format_price(plan.runner_trigger_4r)}원(4R)부터 Trail 2ATR → 1.5ATR 강화
-- **현재 Trail 참고:** {format_price(plan.trailing_stop_current)}원 · {plan.runner_mode}
+- **현재 Trail:** {format_price(plan.trailing_stop_current)}원 = 본전(계획 진입가) · 2차 익절 후 남은 40%에 적용, MA20−2ATR이 본전보다 올라오면 따라 올림 · {plan.runner_mode}
 - **권장 매수금:** {format_amount(plan.position_amount)}원 · 예상 최대손실 {format_amount(plan.actual_risk_amount)}원 ({plan.actual_risk_pct:.2f}% of account)
                 """
             )
@@ -3390,7 +3390,10 @@ def render_results(result: AnalysisResult) -> None:
 
     st.markdown("---")
     st.subheader("MA / ATR 기반 매수·손절·익절 + Runner")
-    st.caption("1차 30% +1.5R, 2차 30% +2.5R, 마지막 40% Runner")
+    st.caption(
+        "1차 30% +1.5R, 2차 30% +2.5R, 마지막 40% Runner · "
+        "현재 Trail은 계획 시점에는 본전(계획 진입가)과 같습니다"
+    )
     render_strategy_cards(filtered_candidates, settings.strategy_n)
 
     strategy_table = make_strategy_table(filtered_candidates, settings.strategy_n)

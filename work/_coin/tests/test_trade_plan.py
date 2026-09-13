@@ -204,6 +204,9 @@ for i in range(5000):
         "매수구간 상단 ≤ MA20+0.5ATR(내림)": t.buy_zone_high <= (ma20 + app.BUY_ZONE_ATR * atr) * (1 + 1e-9),
         "모든 가격이 호가 단위": all(on_tick(v) for v in prices),
         "Trail ≥ 본전": t.trailing_stop_normal >= ref and t.trailing_stop_tight >= ref,
+        # 진입가 ≥ 매수구간 하단(MA20-0.5ATR) > MA20-2ATR 이라 계획 시점에는 늘 본전이다.
+        # 화면 설명('현재 Trail = 본전')이 이 규칙에 기대므로 고정한다.
+        "계획 시점 현재 Trail = 본전(진입가)": t.trailing_stop_current == ref,
         "Trail 은 계산값 이하(내림)": t.trailing_stop_normal <= max(ref, ma20 - app.TRAIL_ATR_MULT * atr) * (1 + 1e-9)
         and t.trailing_stop_tight <= max(ref, ma20 - app.RUNNER_TRAIL_ATR_MULT * atr) * (1 + 1e-9),
         "투자금액 ≤ 최대 비중": t.position_amount <= max_amount * (1 + 1e-9),
