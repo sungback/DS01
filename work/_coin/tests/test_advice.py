@@ -89,15 +89,20 @@ for label, overrides in [
 check("BTC 국면 확인 불가 → 분할매수 아님", action(btc_regime="확인 불가") == "눌림 대기", action(btc_regime="확인 불가"))
 check("스윙 데이터 부족 → 관망", action(swing_structure="데이터 부족") == "관망")
 
-# 조언 문장은 비어 있지 않다.
-for regime in ["Q1 Weak", "Q2 Neutral", "Q3 Strong", "확인 불가"]:
+# 조언 문장은 비어 있지 않고, 표·카드에서 한눈에 읽히도록 60자 이하로 짧다.
+MAX_ADVICE_LEN = 60
+longest = ""
+for regime in ["Q1 Weak", "Q2 Neutral", "Q3 Strong", "Q4 Very Strong", "확인 불가"]:
     for swing in ["HH/HL", "LH/LL", "HH/LL", "데이터 부족"]:
         for status in ["진입 관심", "눌림 확인", "눌림 대기", "과열 주의", "MA20 하회", "데이터 부족"]:
-            act, text = app.make_advice(
-                candidate(btc_regime=regime, swing_structure=swing, entry={"status": status})
-            )
-            if not (act and text.strip()):
-                check(f"조언 문장 {regime}/{swing}/{status}", False, (act, text))
+            for extra in [{}, {"rsi_240m": 75.0, "volume_ratio": 0.8}, {"rs_vs_btc_24h": np.nan}]:
+                act, text = app.make_advice(
+                    candidate(btc_regime=regime, swing_structure=swing, entry={"status": status}, **extra)
+                )
+                if not (act and text.strip()):
+                    check(f"조언 문장 {regime}/{swing}/{status}", False, (act, text))
+                longest = max(longest, text, key=len)
+check(f"가장 긴 조언도 {MAX_ADVICE_LEN}자 이하", len(longest) <= MAX_ADVICE_LEN, f"{len(longest)}자: {longest}")
 
 # --- 5) 한 줄 판단 ----------------------------------------------------------
 def judgement(status, change=5.0):

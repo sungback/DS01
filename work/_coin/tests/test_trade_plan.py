@@ -144,7 +144,21 @@ for label, t in [("1원", t1), ("0.001원", t2), ("1,000원", t3), ("구간 넘�
               t.take_profit_2, t.runner_trigger_4r, t.trailing_stop_normal, t.trailing_stop_tight]
     check(f"{label} 사례: 모든 가격이 호가 단위", all(on_tick(v) for v in fields), fields)
 
-# --- 10) 무작위 불변식 ------------------------------------------------------
+# --- 10) 최소 주문 금액 5,000원 ---------------------------------------------
+# 기준 사례(진입 100 · 손절 96 · 익절 106/110)에서 계좌만 줄여 본다.
+check("계좌 1억 → 주문 경고 없음", p.order_warning == "", p.order_warning)
+
+tiny_account = plan(100, 100, 97, 2, app.Settings(account_capital=100_000, max_position_pct=1.0))
+# 매수 1,000원(최대 비중 1%) · 수량 10 → 1차 318원 · 2차 330원 · 손절 960원
+for label in ["매수", "1차 익절 30%", "2차 익절 30%", "손절 전량"]:
+    check(f"계좌 10만·비중 1% → '{label}' 경고", label in tiny_account.order_warning, tiny_account.order_warning)
+
+small_account = plan(100, 100, 97, 2, app.Settings(account_capital=100_000, max_position_pct=20.0))
+# 매수 12,500원 · 수량 125 → 1차 3,975원 · 2차 4,125원만 5,000원 미만, 손절 전량 12,000원은 가능
+check("계좌 10만·비중 20% → 1차·2차 익절 경고", "1차 익절 30% 3,975원" in small_account.order_warning and "2차 익절 30% 4,125원" in small_account.order_warning, small_account.order_warning)
+check("계좌 10만·비중 20% → 매수·손절은 경고 없음", "매수" not in small_account.order_warning and "손절" not in small_account.order_warning, small_account.order_warning)
+
+# --- 11) 무작위 불변식 ------------------------------------------------------
 rng = np.random.default_rng(11)
 eps = 1e-6
 checked = 0
@@ -169,7 +183,17 @@ for i in range(5000):
     tick = app.krw_tick_size(ref)
     prices = [t.buy_zone_low, t.buy_zone_high, ref, t.stop_price, t.take_profit_1, t.take_profit_2,
               t.runner_trigger_4r, t.trailing_stop_normal, t.trailing_stop_tight]
+    quantity = t.position_quantity
+    orders = {
+        "매수": t.position_amount,
+        "1차 익절 30%": quantity * app.TP1_SELL_PCT / 100 * t.take_profit_1,
+        "2차 익절 30%": quantity * app.TP2_SELL_PCT / 100 * t.take_profit_2,
+        "손절 전량": quantity * t.stop_price,
+    }
+    too_small = [name for name, value in orders.items() if value < app.MIN_ORDER_KRW]
     rules = {
+        "5,000원 미만 주문만 정확히 경고": (t.order_warning != "") == bool(too_small)
+        and all(name in t.order_warning for name in too_small),
         "진입가가 매수구간 안": t.buy_zone_low - eps * ref <= ref <= t.buy_zone_high + eps * ref,
         "손절 < 진입가, 0 이상": 0 <= t.stop_price < ref,
         "손절폭 ≥ min(1ATR, 진입가)": risk >= min(app.MIN_RISK_ATR * atr, ref) * (1 - 1e-9),

@@ -139,6 +139,9 @@ KRW_TICK_SIZES = (
     ("0", "0.00000001"),
 )
 
+# 업비트 원화 마켓 최소 주문 가능 금액 (같은 문서 기준)
+MIN_ORDER_KRW = 5_000
+
 # --- 유동성 점수 구간 (거래대금 하한 → 점수) ---
 LIQUIDITY_TIERS = ((10_000_000_000, 4.0), (3_000_000_000, 3.0), (1_000_000_000, 2.0))
 
@@ -1203,6 +1206,7 @@ class TradePlan:
     actual_risk_amount: float = np.nan
     actual_risk_pct: float = np.nan
     position_capped: bool = False
+    order_warning: str = ""  # 최소 주문 금액 미만인 주문 목록 (없으면 빈 문자열)
 
 
 @dataclass
@@ -1608,6 +1612,20 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
     quantity = amount / reference
     actual_risk = quantity * risk
 
+    # 업비트 최소 주문 금액보다 작은 주문은 실제로 넣을 수 없다.
+    orders = {
+        "매수": amount,
+        f"1차 익절 {TP1_SELL_PCT}%": quantity * TP1_SELL_PCT / 100 * take_profit_1,
+        f"2차 익절 {TP2_SELL_PCT}%": quantity * TP2_SELL_PCT / 100 * take_profit_2,
+        "손절 전량": quantity * stop,
+    }
+    too_small = [
+        f"{name} {value:,.0f}원" for name, value in orders.items() if value < MIN_ORDER_KRW
+    ]
+    order_warning = (
+        f"{MIN_ORDER_KRW:,}원 미만 주문: " + " · ".join(too_small) if too_small else ""
+    )
+
     return TradePlan(
         available=True,
         reason="",
@@ -1632,6 +1650,7 @@ def build_trade_plan(candidate: Candidate, settings: Settings) -> TradePlan:
         actual_risk_amount=actual_risk,
         actual_risk_pct=actual_risk / settings.account_capital * 100,
         position_capped=amount + 1e-9 < raw_amount,
+        order_warning=order_warning,
     )
 
 
@@ -1690,47 +1709,35 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
 
     # (1) 시장/구조 리스크를 가장 먼저 본다.
     if regime.startswith("Q1"):
-        reasons = ["BTC 시장이 Q1 약세"]
+        reasons = ["BTC Q1 약세"]
         if rs_unknown:
-            reasons.append("BTC 대비 상대강도 확인 불가")
+            reasons.append("상대강도 확인 불가")
         elif not rs_positive:
-            reasons.append("BTC 대비 상대강도도 약함")
+            reasons.append("상대강도 약함")
         if downtrend:
-            reasons.append("4시간봉이 LH/LL 하락 구조")
-        return result(
-            "신규매수 보류", reasons, " → 시장 회복과 구조 반전을 먼저 확인하세요."
-        )
+            reasons.append("LH/LL 하락")
+        return result("신규매수 보류", reasons, " → 시장 회복 대기")
 
     if downtrend:
-        reasons = ["4시간봉이 LH/LL 하락 구조"]
+        reasons = ["LH/LL 하락"]
         if rs_unknown:
-            reasons.append("RS vs BTC 확인 불가")
+            reasons.append("RS 확인 불가")
         elif not rs_positive:
-            reasons.append("RS vs BTC가 음수")
-        return result(
-            "관망 / 반등 확인",
-            reasons,
-            " → 최소한 HL 또는 HH 전환을 확인한 뒤 접근하는 편이 낫습니다.",
-        )
+            reasons.append("RS 음수")
+        return result("관망 / 반등 확인", reasons, " → HL·HH 전환 확인")
 
     # (2) 추격매수 위험
     if status == "과열 주의" or distance > ENTRY_OVERHEAT_PCT:
-        reasons = ["1시간 MA20 이격이 큼"]
+        reasons = ["MA20 이격 큼"]
         if rsi_high:
-            reasons.append("RSI가 Dynamic Upper 부근/이상")
-        return result(
-            "추격매수 자제", reasons, " → MA20 근처 눌림이나 재돌파 확인을 기다리세요."
-        )
+            reasons.append("RSI 상단")
+        return result("추격매수 자제", reasons, " → 눌림 대기")
 
     if status == "MA20 하회":
-        reasons = ["현재가가 1시간 MA20 아래"]
+        reasons = ["MA20 아래"]
         if rsi_low:
-            reasons.append("RSI도 Dynamic Lower 아래")
-        return result(
-            "반등 확인 후 접근",
-            reasons,
-            " → 1시간 MA20 회복과 거래량 동반을 확인하는 것이 우선입니다.",
-        )
+            reasons.append("RSI 하단 아래")
+        return result("반등 확인 후 접근", reasons, " → MA20 회복 확인")
 
     # (3) 적극 관심 구간
     good_swing = swing == "HH/HL"
@@ -1738,62 +1745,38 @@ def make_advice(candidate: Candidate) -> tuple[str, str]:
     strong_market = regime.startswith(("Q3", "Q4"))
 
     if strong_market and good_swing and rs_positive and good_entry:
-        reasons = [regime, "BTC 대비 상대강도 우위", "HH/HL 상승 구조"]
+        reasons = [regime, "상대강도 우위", "HH/HL 상승"]
         reasons.append(
-            "거래량이 EMA20 대비 강함"
-            if volume_strong
-            else "거래량이 평균 이상"
-            if volume_ok
-            else "거래량 확인 필요"
+            "거래량 강함" if volume_strong else "거래량 양호" if volume_ok else "거래량 부족"
         )
         if rsi_high:
-            return result(
-                "눌림 후 분할매수 관심",
-                reasons,
-                " · RSI가 상단에 가까워 즉시 추격보다 눌림 진입이 유리합니다.",
-            )
+            return result("눌림 후 분할매수 관심", reasons, " → RSI 상단, 눌림 매수")
         if rs_strong and volume_ok:
-            return result(
-                "분할매수 관심",
-                reasons,
-                " → 계획 매수구간과 손절선을 지키는 전제에서 우선순위가 높은 후보입니다.",
-            )
-        return result(
-            "매수 관심",
-            reasons,
-            " → 진입구간 도달 여부를 확인한 뒤 분할 접근을 고려할 수 있습니다.",
-        )
+            return result("분할매수 관심", reasons, " → 손절선 지키며 분할매수")
+        return result("매수 관심", reasons, " → 구간 도달 시 분할매수")
 
     # (4) 구조는 유지되나 진입 신호가 약한 경우
     if good_swing and rs_positive:
-        reasons = ["HH/HL 상승 구조", "RS vs BTC 양수"]
+        reasons = ["HH/HL 상승", "RS 양수"]
         if status in {"눌림 대기", "눌림 확인"}:
-            reasons.append("아직 최적 진입 위치 대기")
+            reasons.append("진입 위치 대기")
         if not volume_ok:
-            reasons.append("거래량 확증 부족")
-        return result(
-            "눌림 대기",
-            reasons,
-            " → 가격을 쫓기보다 1시간 MA20 부근의 반등 확인이 좋습니다.",
-        )
+            reasons.append("거래량 부족")
+        return result("눌림 대기", reasons, " → MA20 반등 확인")
 
     # (5) 애매한 구조
     reasons = []
     if swing in {"HH/LL", "LH/HL"}:
-        reasons.append(f"Swing 구조가 {swing}로 혼재")
+        reasons.append(f"Swing {swing} 혼재")
     if rs_unknown:
-        reasons.append("BTC 대비 상대강도 확인 불가")
+        reasons.append("상대강도 확인 불가")
     elif not rs_positive:
-        reasons.append("BTC 대비 상대강도가 약함")
+        reasons.append("상대강도 약함")
     if status in {"눌림 대기", "눌림 확인"}:
-        reasons.append("진입 신호가 아직 완성되지 않음")
+        reasons.append("진입 신호 미완성")
     if not reasons:
-        reasons.append("핵심 조건이 아직 충분히 정렬되지 않음")
-    return result(
-        "관망",
-        reasons,
-        " → 추가 확인 전에는 신규 진입 우선순위를 낮게 두는 편이 좋습니다.",
-    )
+        reasons.append("조건 미정렬")
+    return result("관망", reasons, " → 진입 보류")
 
 
 def finalize(candidate: Candidate, settings: Settings) -> Candidate:
@@ -1960,6 +1943,7 @@ def make_strategy_table(candidates: list[Candidate], count: int) -> pd.DataFrame
             "예상 최대손실": c.plan.actual_risk_amount,
             "실제 계좌위험(%)": c.plan.actual_risk_pct,
             "종목비중 제한": c.plan.position_capped,
+            "주문 경고": c.plan.order_warning,
         }
         for c in candidates[:count]
         if c.plan.available
@@ -2981,6 +2965,11 @@ def render_strategy_cards(candidates: list[Candidate], count: int) -> None:
             )
             if plan.position_capped:
                 st.caption("종목당 최대 투자비중 제한이 적용된 포지션입니다.")
+            if plan.order_warning:
+                st.warning(
+                    f"{plan.order_warning} → 업비트에서 주문할 수 없습니다. "
+                    "계좌 자금이나 종목 비중을 늘려야 합니다."
+                )
             st.caption(
                 "Trail은 완료된 1시간봉마다 다시 계산하고, 실제 운용 시 기존 Trail보다 "
                 "낮추지 않는 방식입니다."
