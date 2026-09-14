@@ -1858,7 +1858,7 @@ def build_result_table(candidates: list[Candidate]) -> pd.DataFrame:
 COMPACT_COLUMNS = {
     "symbol": "종목",
     "korean_name": "한글명",
-    "judgement": "판단",
+    "judgement": "진입 신호(1시간봉)",
     "final_action": "최종 판단",
     "final_advice": "투자 조언",
     "final_score": "FinalScore",
@@ -3375,7 +3375,9 @@ def render_results(result: AnalysisResult) -> None:
     )
     render_main_table(filtered_table, settings.top_n)
     st.caption(
-        "※ '최종 판단/투자 조언'은 현재 데이터에 따른 규칙 기반 참고 신호이며, "
+        "※ '진입 신호(1시간봉)'는 1시간봉 진입 상태만 본 값이고, BTC 시장 국면·Swing 구조까지 "
+        "반영한 결론은 '최종 판단'입니다. 둘이 다르면 '최종 판단'을 따르세요. "
+        "'최종 판단/투자 조언'은 현재 데이터에 따른 규칙 기반 참고 신호이며, "
         "확정적인 수익을 의미하지 않습니다."
     )
 

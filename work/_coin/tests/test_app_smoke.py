@@ -77,6 +77,13 @@ with tempfile.TemporaryDirectory(prefix="coin_apptest_") as tmp:
         [c.value for c in at.caption][:5],
     )
     check("표 2개 이상 (후보 · 전체 데이터)", len(at.dataframe) >= 2, len(at.dataframe))
+    # '판단'은 1시간봉 진입 상태만 본 값이라 '최종 판단'과 엇갈릴 수 있어 이름으로 범위를 드러낸다.
+    main_columns = list(at.dataframe[0].value.columns) if len(at.dataframe) else []
+    check(
+        "후보 표에 '진입 신호(1시간봉)'과 '최종 판단' 열",
+        "진입 신호(1시간봉)" in main_columns and "최종 판단" in main_columns and "판단" not in main_columns,
+        main_columns[:6],
+    )
     # st.pyplot 은 AppTest 에서 'image' 요소로 보인다.
     charts = at.get("image")
     check("차트 그림 1개 이상", len(charts) >= 1, len(charts))
