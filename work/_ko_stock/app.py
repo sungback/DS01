@@ -410,6 +410,19 @@ def build_index_from_csv():
     return df
 
 
+def read_kospi_index(start):
+    """
+    KOSPI 지수를 야후(^KS11)에서 받는다.
+    fdr 의 KS11 은 2026-09-17 에서 갱신이 멈춰 쓰지 않는다.
+    """
+
+    df = fdr.DataReader("^KS11", start)[["Open", "High", "Low", "Close", "Volume"]]
+    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+    df.index.name = "Date"
+
+    return df
+
+
 def data_fingerprint():
     """
     주가 번들의 상태를 짧은 글자로 요약한다.
@@ -549,7 +562,7 @@ def prepare_stock_data():
             kospi = build_index_from_csv()
 
         if kospi is None or kospi.empty:
-            kospi = fdr.DataReader("KS11", START)
+            kospi = read_kospi_index(START)
 
             if kospi.empty:
                 raise RuntimeError("KOSPI 데이터를 가져오지 못했습니다.")
@@ -563,7 +576,7 @@ def prepare_stock_data():
             # 마지막 날짜보다 5일 앞부터 다시 받는다.
             start = (kospi.index[-1] - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
 
-            new = fdr.DataReader("KS11", start)
+            new = read_kospi_index(start)
 
             if not new.empty:
                 new.index = pd.to_datetime(new.index)
